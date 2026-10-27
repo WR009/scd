@@ -1,0 +1,27 @@
+[package]
+name = "scd"
+version = "0.1.0"
+edition = "2024"
+description = "super cd - jump to your favourite directories from the terminal"
+license = "MIT"
+readme = "README.md"
+keywords = ["cli", "cd", "directory", "jump", "productivity"]
+categories = ["command-line-utilities"]
+
+# No dependencies on purpose: scd must build offline from a clean checkout,
+# so the small amount of JSON it needs lives in src/json.rs.
+[dependencies]
+
+[lib]
+name = "scd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "scd"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
