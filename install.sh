@@ -36,16 +36,27 @@ while [ $# -gt 0 ]; do
         --skip-build) SKIP_BUILD=1; shift ;;
         --add-to-rc) ADD_TO_RC=1; shift ;;
         -h | --help) usage; exit 0 ;;
-        *) printf 'install.sh: unknown argument %s\n\n' "$1" >&2; usage >&2; exit 64 ;;
+        *) bad "install.sh: unknown argument $1"; printf '\n' >&2; usage >&2; exit 64 ;;
     esac
 done
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-say() { printf '==> %s\n' "$1"; }
+
+# Colour, only when it will actually be seen: same rules as the program itself.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+    C_CYAN=$'\033[1;36m'; C_GREEN=$'\033[1;32m'; C_YELLOW=$'\033[33m'
+    C_RED=$'\033[1;31m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
+else
+    C_CYAN=''; C_GREEN=''; C_YELLOW=''; C_RED=''; C_DIM=''; C_OFF=''
+fi
+say()  { printf '%s==> %s%s\n' "$C_CYAN" "$1" "$C_OFF"; }
+good() { printf '%s%s%s\n' "$C_GREEN" "$1" "$C_OFF"; }
+note() { printf '%s%s%s\n' "$C_DIM" "$1" "$C_OFF"; }
+bad()  { printf '%s%s%s\n' "$C_RED" "$1" "$C_OFF" >&2; }
 
 if [ "$SKIP_BUILD" -eq 0 ]; then
     if ! command -v cargo >/dev/null 2>&1; then
-        printf 'cargo is not on PATH. Install Rust (https://rustup.rs) or use --skip-build.\n' >&2
+        bad 'cargo is not on PATH. Install Rust (https://rustup.rs) or use --skip-build.'
         exit 1
     fi
     say "cargo build --$CONFIGURATION (no dependencies, works offline)"
@@ -54,7 +65,7 @@ fi
 
 BUILT="$REPO/target/$CONFIGURATION/scd"
 if [ ! -f "$BUILT" ]; then
-    printf 'no build found at %s\n' "$BUILT" >&2
+    bad "no build found at $BUILT"
     exit 1
 fi
 
@@ -101,20 +112,20 @@ if [ "$ADD_TO_RC" -eq 1 ]; then
 fi
 
 printf '\n'
-printf 'scd is installed in %s\n' "$DEST"
+good "scd is installed in $DEST"
 printf '\n'
-printf '1) put the program on PATH:\n'
-printf '     export PATH="%s:$PATH"\n' "$DEST/bin"
-printf '   (add that line to %s to keep it)\n' "$RC_FILE"
+printf '%s1) put the program on PATH:%s\n' "$C_YELLOW" "$C_OFF"
+note "     export PATH=\"$DEST/bin:\$PATH\""
+note "   (add that line to $RC_FILE to keep it)"
 printf '\n'
 if [ "$ADD_TO_RC" -eq 0 ]; then
-    printf '2) load the shell function so "scd" really changes directory:\n'
-    printf '     source "%s"\n' "$WRAPPER"
-    printf '   or re-run with --add-to-rc to append it to %s\n' "$RC_FILE"
+    printf '%s2) load the shell function so "scd" really changes directory:%s\n' "$C_YELLOW" "$C_OFF"
+    note "     source \"$WRAPPER\""
+    note "   or re-run with --add-to-rc to append it to $RC_FILE"
     printf '\n'
 fi
-printf '3) try it:\n'
-printf '     scd            # the [c]/[a]/[1..n] menu\n'
-printf '     scd add .      # save the current directory\n'
-printf '     scd <name>     # jump straight there\n'
-printf '     scd --help     # the full user guide\n'
+printf '%s3) try it:%s\n' "$C_YELLOW" "$C_OFF"
+note '     scd            # the [c]/[a]/[1..n] menu'
+note '     scd add .      # save the current directory'
+note '     scd <name>     # jump straight there'
+note '     scd --help     # the full user guide'

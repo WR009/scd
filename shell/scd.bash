@@ -5,6 +5,15 @@
 # scd resolves the directory and writes it to $SCD_TARGET_FILE; this function does the cd,
 # because a child process cannot change its parent shell's working directory.
 
+# Red "scd: ..." on stderr, coloured only when stderr is a terminal and NO_COLOR is unset.
+_scd_err() {
+    if [ -t 2 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+        printf '\033[1;31mscd:\033[0m \033[31m%s\033[0m\n' "$*" >&2
+    else
+        printf 'scd: %s\n' "$*" >&2
+    fi
+}
+
 scd() {
     local _scd_bin _scd_tmp _scd_rc _scd_target
 
@@ -15,7 +24,7 @@ scd() {
         _scd_bin="$(type -P scd 2>/dev/null || type -P scd.exe 2>/dev/null)"
     fi
     if [ -z "$_scd_bin" ]; then
-        echo "scd: cannot find the scd binary - put <install>/bin on PATH, or set SCD_BIN" >&2
+        _scd_err "cannot find the scd binary - put <install>/bin on PATH, or set SCD_BIN"
         return 127
     fi
 

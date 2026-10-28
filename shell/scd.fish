@@ -2,6 +2,15 @@
 #
 #   source "$HOME/scd/shell/scd.fish"     # or put it in ~/.config/fish/functions/
 
+function _scd_err --argument-names msg
+    # set_color already refuses to emit escapes when stderr is not a terminal.
+    if test -z "$NO_COLOR"; and test "$TERM" != dumb
+        printf '%s\n' (set_color red --bold)"scd:"(set_color normal)" "(set_color red)$msg(set_color normal) >&2
+    else
+        printf 'scd: %s\n' $msg >&2
+    end
+end
+
 function scd --description "super cd: jump to a saved directory"
     set -l bin "$SCD_BIN"
     if test -z "$bin"
@@ -9,7 +18,7 @@ function scd --description "super cd: jump to a saved directory"
         set bin (type -p scd 2>/dev/null; type -p scd.exe 2>/dev/null)
     end
     if test -z "$bin"
-        echo "scd: cannot find the scd binary - put <install>/bin on PATH, or set SCD_BIN" >&2
+        _scd_err "cannot find the scd binary - put <install>/bin on PATH, or set SCD_BIN"
         return 127
     end
 

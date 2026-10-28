@@ -1,12 +1,17 @@
-//! Terminal I/O helpers.
+//! Terminal I/O helpers: indentation, prompts, line reading, column-aware padding and
+//! per-stream colour.
 //!
-//! Everything the user reads is indented by four spaces, matching the layout specified in
-//! `docs/ARCHITECTURE.md`. Menu chrome goes to a selectable stream (see [`crate::emit`]),
-//! while command output always goes to stdout so it stays pipeable.
+//! Two kinds of output exist and must not be confused:
+//! * **menu chrome** ([`Ui::line`] / [`Ui::ask`]) - indented by four spaces, matching the
+//!   layout in `docs/ARCHITECTURE.md`, sent to whichever stream [`crate::emit`] picked;
+//! * **command output** ([`Ui::out`]) - flush left, always stdout, so `scd list` and
+//!   `scd config` stay pipeable.
 
 use std::io::{self, BufRead, Write};
 
-/// Indent used for every user-facing line.
+use crate::color::Palette;
+
+/// Indent used for every menu line.
 pub const INDENT: &str = "    ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,15 +20,26 @@ pub enum Stream {
     Stderr,
 }
 
-/// A line-oriented view on one output stream.
+/// A line-oriented view on one output stream, with its own colour decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ui {
     stream: Stream,
+    palette: Palette,
 }
 
 impl Ui {
+    /// Detect colour support for `stream` (tty? `SCD_COLOR`? `NO_COLOR`?).
     pub fn new(stream: Stream) -> Self {
-        Ui { stream }
+        Ui { stream, palette: Palette::for_stream(stream) }
+    }
+
+    pub fn with_palette(stream: Stream, palette: Palette) -> Self {
+        Ui { stream, palette }
+    }
+
+    /// Never colour - used by tests that compare exact text.
+    pub fn plain(stream: Stream) -> Self {
+        Ui { stream, palette: Palette::off() }
     }
 
     pub fn stdout() -> Self {
@@ -38,9 +54,14 @@ impl Ui {
         self.stream
     }
 
-    /// Print one indented line (an empty `text` prints a blank line).
+    /// Palette callers use to style names, paths, keys, ... before handing text over.
+    pub fn palette(&self) -> Palette {
+        self.palette
+    }
+
+    /// Print one indented menu line (an empty `text` prints a blank line).
     pub fn line(&self, text: &str) {
-        write_line(self.stream, &indented(&flatten(text)));
+        write_line(self.stream, &indented(text));
     }
 
     pub fn lines(&self, texts: &[String]) {
@@ -53,11 +74,31 @@ impl Ui {
         write_line(self.stream, "");
     }
 
+    /// Print one flush-left line of command output.
+    pub fn out(&self, text: &str) {
+        write_line(self.stream, &flatten(text));
+    }
+
+    pub fn out_lines(&self, texts: &[String]) {
+        for text in texts {
+            self.out(text);
+        }
+    }
+
     /// Print a prompt without a newline, then read one line. `None` means end of input.
     pub fn ask(&self, prompt: &str) -> Option<String> {
         write_raw(self.stream, &indented(&flatten(prompt)));
         flush(self.stream);
         read_line()
+    }
+}
+
+/// Prefix a non-empty line with the standard indent.
+pub fn indented(text: &str) -> String {
+    if text.is_empty() {
+        String::new()
+    } else {
+        format!("{INDENT}{text}")
     }
 }
 
@@ -88,20 +129,12 @@ pub fn flatten(text: &str) -> String {
     out
 }
 
-/// Prefix a non-empty line with the standard indent.
-pub fn indented(text: &str) -> String {
-    if text.is_empty() {
-        String::new()
-    } else {
-        format!("{INDENT}{text}")
-    }
-}
-
 /// Width of `text` in terminal columns: East Asian wide/fullwidth characters (and emoji)
 /// occupy two cells, so padding by `chars().count()` would misalign a menu that contains
 /// both `docs` and `工作目录`.
 pub fn display_width(text: &str) -> usize {
-    text.chars().map(char_width).sum()
+    // Colour escapes take no room on screen, so measure the text the user actually sees.
+    crate::color::strip_ansi(text).chars().map(char_width).sum()
 }
 
 fn char_width(ch: char) -> usize {
@@ -134,53 +167,13 @@ fn char_width(ch: char) -> usize {
 }
 
 /// Pad `text` with spaces so that it occupies `width` terminal columns (never truncates).
+/// Colour escapes inside `text` are ignored when measuring, so styled names still align.
 pub fn pad_to_width(text: &str, width: usize) -> String {
     let missing = width.saturating_sub(display_width(text));
     if missing == 0 {
         text.to_string()
     } else {
         format!("{text}{}", " ".repeat(missing))
-    }
-}
-
-/// Command output (`scd list`, `scd config`, `scd add`, ...): always stdout.
-pub fn print_line(text: &str) {
-    write_line(Stream::Stdout, text);
-}
-
-fn write_line(stream: Stream, text: &str) {
-    match stream {
-        Stream::Stdout => {
-            let mut handle = io::stdout();
-            let _ = writeln!(handle, "{text}");
-            let _ = handle.flush();
-        }
-        Stream::Stderr => {
-            let _ = writeln!(io::stderr(), "{text}");
-        }
-    }
-}
-
-fn write_raw(stream: Stream, text: &str) {
-    match stream {
-        Stream::Stdout => {
-            let mut handle = io::stdout();
-            let _ = write!(handle, "{text}");
-        }
-        Stream::Stderr => {
-            let _ = write!(io::stderr(), "{text}");
-        }
-    }
-}
-
-fn flush(stream: Stream) {
-    match stream {
-        Stream::Stdout => {
-            let _ = io::stdout().flush();
-        }
-        Stream::Stderr => {
-            let _ = io::stderr().flush();
-        }
     }
 }
 
@@ -210,6 +203,45 @@ pub fn clean_line(buffer: &[u8]) -> String {
     text.trim_end_matches(['\r', '\n']).to_string()
 }
 
+fn write_line(stream: Stream, text: &str) {
+    match stream {
+        Stream::Stdout => {
+            let mut handle = io::stdout();
+            let _ = writeln!(handle, "{text}");
+            let _ = handle.flush();
+        }
+        Stream::Stderr => {
+            let mut handle = io::stderr();
+            let _ = writeln!(handle, "{text}");
+            let _ = handle.flush();
+        }
+    }
+}
+
+fn write_raw(stream: Stream, text: &str) {
+    match stream {
+        Stream::Stdout => {
+            let mut handle = io::stdout();
+            let _ = write!(handle, "{text}");
+        }
+        Stream::Stderr => {
+            let mut handle = io::stderr();
+            let _ = write!(handle, "{text}");
+        }
+    }
+}
+
+fn flush(stream: Stream) {
+    match stream {
+        Stream::Stdout => {
+            let _ = io::stdout().flush();
+        }
+        Stream::Stderr => {
+            let _ = io::stderr().flush();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,26 +268,6 @@ mod tests {
     }
 
     #[test]
-    fn display_width_counts_cjk_as_two_columns() {
-        assert_eq!(display_width(""), 0);
-        assert_eq!(display_width("docs"), 4);
-        assert_eq!(display_width("工作"), 4);
-        assert_eq!(display_width("工作目录"), 8);
-        assert_eq!(display_width("a工b"), 4);
-        assert_eq!(display_width("ＤＯＣＳ"), 8, "fullwidth latin is wide too");
-    }
-
-    #[test]
-    fn pad_to_width_aligns_mixed_scripts() {
-        assert_eq!(pad_to_width("docs", 8), "docs    ");
-        assert_eq!(pad_to_width("工作", 8), "工作    ");
-        assert_eq!(pad_to_width("工作目录", 8), "工作目录");
-        assert_eq!(pad_to_width("工作目录", 4), "工作目录", "never truncates");
-        assert_eq!(display_width(&pad_to_width("工作", 8)), 8);
-        assert_eq!(display_width(&pad_to_width("docs", 8)), 8);
-    }
-
-    #[test]
     fn flatten_keeps_messages_on_one_line() {
         assert_eq!(flatten("plain"), "plain");
         assert_eq!(flatten(""), "");
@@ -271,13 +283,47 @@ mod tests {
 
     #[test]
     fn line_output_never_contains_a_raw_newline_inside_the_text() {
-        assert_eq!(indented(&flatten("cannot write x: \r\nAccess is denied.")), "    cannot write x: Access is denied.");
+        assert_eq!(
+            indented(&flatten("cannot write x: \r\nAccess is denied.")),
+            "    cannot write x: Access is denied."
+        );
     }
 
     #[test]
-    fn ui_remembers_its_stream() {
+    fn display_width_counts_cjk_as_two_columns() {
+        assert_eq!(display_width(""), 0);
+        assert_eq!(display_width("docs"), 4);
+        assert_eq!(display_width("工作"), 4);
+        assert_eq!(display_width("工作目录"), 8);
+        assert_eq!(display_width("a工b"), 4);
+        assert_eq!(display_width("ＤＯＣＳ"), 8, "fullwidth latin is wide too");
+    }
+
+    #[test]
+    fn display_width_ignores_colour_escapes() {
+        let on = Palette::on();
+        assert_eq!(display_width(&on.name("docs")), 4, "escapes take no room on screen");
+        assert_eq!(display_width(&on.path("工作")), 4);
+        assert_eq!(pad_to_width(&on.name("docs"), 8), format!("{}    ", on.name("docs")));
+        assert_eq!(display_width(&pad_to_width(&on.name("docs"), 8)), 8);
+    }
+
+    #[test]
+    fn pad_to_width_aligns_mixed_scripts() {
+        assert_eq!(pad_to_width("docs", 8), "docs    ");
+        assert_eq!(pad_to_width("工作", 8), "工作    ");
+        assert_eq!(pad_to_width("工作目录", 8), "工作目录");
+        assert_eq!(pad_to_width("工作目录", 4), "工作目录", "never truncates");
+        assert_eq!(display_width(&pad_to_width("工作", 8)), 8);
+        assert_eq!(display_width(&pad_to_width("docs", 8)), 8);
+    }
+
+    #[test]
+    fn ui_remembers_its_stream_and_palette() {
         assert_eq!(Ui::stdout().stream(), Stream::Stdout);
         assert_eq!(Ui::stderr().stream(), Stream::Stderr);
         assert_eq!(Ui::new(Stream::Stderr), Ui::stderr());
+        assert!(!Ui::plain(Stream::Stdout).palette().enabled);
+        assert!(Ui::with_palette(Stream::Stdout, Palette::on()).palette().enabled);
     }
 }

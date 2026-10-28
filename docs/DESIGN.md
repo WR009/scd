@@ -7,7 +7,7 @@
 
 | 需求（ARCHITECTURE.md） | 实现 | 验证 |
 | --- | --- | --- |
-| 基于 Rust，终端里快速跳转工作目录 | 零依赖 Rust 二进制 `scd`（lib + bin） | `cargo test`：126 项 |
+| 基于 Rust，终端里快速跳转工作目录 | 零依赖 Rust 二进制 `scd`（lib + bin） | `cargo test`：160 项 |
 | `scd` 直接启动弹出 `[c]/[a]/[1]..[n]` 菜单 | `src/menu.rs::menu_lines`（4 空格缩进、`[c]`/`[a]`/空行/编号列表） | `menu::tests::*`；`tests/cli.rs::bare_scd_shows_the_documented_menu` |
 | `c` 设置最多显示多少个位置 n，并保留后续拓展 | `src/settings.rs`：`Setting` 枚举 + `ALL` 列表，逐项询问；当前只有 `MaxDisplay` | `settings::tests::*`；`tests/cli.rs::configure_flow_*` |
 | 用了 `c` 就逐个询问需要修改的内容 | `settings::run` 遍历 `ALL`，每项一个 `[i/n] 标签 (提示; current: 值):` 问题；回车保持、`quit` 取消 | `configure_flow_sets_max_display`、`configure_flow_keeps_values_on_bare_enter_and_cancels_on_quit` |
@@ -48,11 +48,22 @@ stdout，中文目录会变问号；写文件 + `[IO.File]::ReadAllText(path, UT
 `src/lib.rs` 暴露全部逻辑，`src/main.rs` 只有 8 行。集成测试既可以用
 `env!("CARGO_BIN_EXE_scd")` 跑真进程（`tests/cli.rs`），也可以直接调用库函数做快速断言。
 
-### 2.4 最近使用优先（MRU）
+### 2.4 顺序固定，由用户控制（0.2.0 起）
 
-跳转/添加都会把该位置移到 `locations` 首位，菜单显示前 `max_display` 项。
-这样“最多显示 n 个”才有意义：留在菜单里的一定是最常用的。
-副作用是编号会变，所以 `scd <编号>` 只在刚看过菜单时可靠；记得路径就用路径或名称（文档本意如此）。
+0.1.0 曾按“最近使用”把位置移到首位，实际用下来问题更大：编号会漂移，
+`scd 3` 今天和明天可能指向不同目录，肌肉记忆全部失效。0.2.0 改成：
+
+* `Config::record_visit` 只累加 `visits` / 更新 `last_used_at`，**永不重排**；
+  这两个字段退化为纯统计信息，只在 `scd list` 里展示。
+* `Config::add` **追加到末尾**（返回新下标），已有编号不会因为新增而错位；
+  若新下标 ≥ `max_display`，`add` 会额外提示「菜单看不到它，用 `[c]` 提高上限或 `scd mv n 1` 提前」。
+* 排序是显式操作：`Config::move_to` / `Config::shift`（越界报错、到边夹紧，不环绕），
+  对应 `scd mv <目标> <位置>`、`scd up/down <目标>`；改完立即打印新的顺序。
+* 别名是显式操作：`Config::rename` 校验非空、≤60 字符、不与其他位置重名（重名会让
+  `scd <名字>` 永久歧义），对应 `scd rename <目标> <新别名>`（名字可含空格）。
+* `config.json` 里 `locations` 数组顺序 = 菜单顺序，手改即可，程序原样保留。
+
+这样 `max_display` 的语义也更干净：显示的是**你排在前面的 n 个**，而不是“最近用的 n 个”。
 
 ### 2.5 原子写 + 不覆盖坏配置
 
@@ -93,7 +104,8 @@ main.rs ──> lib.rs::run
                  ├─ menu       渲染菜单、主循环 ──> settings(c) / add(a) / jump
                  ├─ jump       resolve / perform ──> emit
                  ├─ emit       目录交回 shell（SCD_TARGET_FILE 或 stdout）
-                 └─ ui         缩进输出、读行、显示宽度
+                 ├─ ui         缩进输出、读行、显示宽度、上色落笔
+                 └─ color      ANSI 调色板、tty 检测、Windows VT 开关（0.2.0）
 ```
 
 依赖是单向的：`ui`/`json`/`time`/`paths` 是叶子，`menu` 在顶层组合它们。
@@ -113,21 +125,61 @@ main.rs ──> lib.rs::run
   `key/label/hint/current/apply`，再加进 `ALL`。菜单里的 `c` 流程会自动变成 `[1/2]`、`[2/2]`。
 * **新增子命令**：在 `cli::Command` 加变体 + `cli::parse` 的关键字表 + `lib::run` 的分支。
 * **换配置格式**：只需替换 `Config::from_json` / `to_json`，其余模块不感知 JSON。
-* **位置排序策略**：改 `Config::touch` / `add`（例如按 visits 排序、分组、frecency 打分）。
+* **位置排序策略**：改 `Config::move_to` / `shift` / `add`（例如提供 `scd sort visits` 让用户主动按访问次数排一次，或分组、frecency 打分）。
 
 ## 6. 测试策略
 
 | 层级 | 位置 | 数量 | 覆盖 |
 | --- | --- | --- | --- |
-| 单元 | `src/*.rs` 里的 `#[cfg(test)] mod tests` | 89 | JSON 解析/序列化/错误定位、历法转换、路径规范化与同路径判定、配置读写与匹配分层、菜单排版（含 CJK 对齐）、设置项校验、目标解析各分支 |
-| 端到端 | `tests/cli.rs` | 37 | 真跑 `scd` 二进制：菜单原文、`a`/`c` 流程、跳转（路径/编号/名称/相对/`~`/`--`）、MRU 与 visits、`max_display` 隐藏、中文与带空格路径、`SCD_TARGET_FILE` 契约、stdout 纯净性、损坏配置不被覆盖、退出码 0/1/2/64 |
+| 单元 | `src/*.rs` 里的 `#[cfg(test)] mod tests` | 110 | JSON 解析/序列化/错误定位、历法转换、路径规范化与同路径判定、配置读写与匹配分层、菜单排版（含 CJK 对齐）、设置项校验、目标解析各分支 |
+| 端到端 | `tests/cli.rs` | 50 | 真跑 `scd` 二进制：菜单原文、`a`/`c` 流程、跳转（路径/编号/名称/相对/`~`/`--`）、MRU 与 visits、`max_display` 隐藏、中文与带空格路径、`SCD_TARGET_FILE` 契约、stdout 纯净性、损坏配置不被覆盖、退出码 0/1/2/64 |
 | 安装 | `install.ps1` + `shell/scd.ps1` 实机跑 | 30 项断言 | `bin/`+`shell/`+`config.json` 结构、包装函数是否真的改变 `$PWD`、中文目录跳转、失败不乱跳、`list/config/help/version/add/rm/--config` 经函数转发后仍正确 |
 
 每个端到端测试都用独立临时目录 + `SCD_CONFIG`，不会碰到开发者真实的配置文件。
 
-## 7. 已知取舍
+## 7. 0.2.0：配色
 
-* **编号会变**：MRU 排序导致 `scd 3` 的含义随使用变化（换来“常用的一直在菜单里”）。
+新增 `src/color.rs`，仍然零依赖。三条硬规则：
+
+1. **按流判定**：`Palette::for_stream(Stream)` 分别检测 stdout / stderr 是否为控制台
+   （Windows 用 `GetConsoleMode`，Unix 用 `isatty`）。所以 `cd "$(scd proj)"` 里 stdout 是管道
+   → 不上色，而 stderr 仍可以是彩色提示。
+2. **机器可读通道永不上色**：`emit_jump` 的 stdout 目录行、`SCD_TARGET_FILE` 的内容、
+   `config.json` 都绕过 palette。`tests/cli.rs` 用 `SCD_COLOR=always` 专门守这条契约。
+3. **上色不改变文本**：`strip_ansi(coloured) == plain` 对菜单、列表、帮助、错误、
+   添加/配置流程都有断言；`display_width` 先剥转义再计宽，所以对齐不受影响。
+
+优先级：`SCD_COLOR=always|never` > `NO_COLOR` / `CLICOLOR=0` / `TERM=dumb` > tty 检测 >
+`CLICOLOR_FORCE`。判定逻辑抽成纯函数 `decide()`，用真值表测试，不碰进程环境（避免并行测试互相干扰）。
+
+角色配色：别名 `1;32`、路径 `1;36`、按键 `2`+`1;33`、参数 `33`、提示符 `1;35`、
+成功 `1;32`、警告 `33`、错误 `1;31`、次要信息 `2`、帮助小节标题 `1;4`（粗体+下划线，
+深浅背景都读得清，不像固定亮色会在白底上消失）。
+
+Windows 上第一次决定要上色时会调用 `SetConsoleMode(..., ENABLE_VIRTUAL_TERMINAL_PROCESSING)`，
+否则 cmd.exe / 老 conhost 会把 `[1;36m` 当普通文本打出来。FFI 直接 `unsafe extern "system"`
+声明 kernel32 的三个函数，不引入 `winapi` / `windows-sys`。
+
+## 8. 0.2.0：顺序与别名交给用户
+
+需求（用户提出）：取消按使用次数排名、地址全部固定、别名可自己改。落点：
+
+| 变化 | 代码 | 测试 |
+| --- | --- | --- |
+| 跳转不再重排 | `Config::record_visit`（原 `touch`） | `config::tests::record_visit_counts_without_reordering`、`jump::tests::perform_counts_the_visit_and_reports_the_path`、`tests/cli.rs::jumping_never_reorders_but_does_count_visits` |
+| 新增追加到末尾 | `Config::add` 返回 `Added::New(len-1)` | `config::tests::add_appends_so_existing_numbers_never_shift`、`tests/cli.rs::add_appends_so_existing_numbers_stay_valid` |
+| 手动排序 | `Config::move_to` / `shift` + `scd mv/up/down` | `config::tests::move_to_reorders_on_request`、`shift_moves_one_step_and_clamps`、`tests/cli.rs::mv_up_and_down_reorder_and_persist` |
+| 改别名 | `Config::rename` + `scd rename` | `config::tests::rename_changes_the_alias_only`、`tests/cli.rs::rename_changes_the_alias_and_keeps_the_path`、`rename_refuses_empty_and_duplicate_names` |
+| 手改顺序生效 | `Config::load` 原样保留数组顺序 | `tests/cli.rs::hand_edited_order_is_respected` |
+| 新位置被隐藏时提示 | `add::interpret` 的 note 行 | `tests/cli.rs::a_new_entry_beyond_max_display_warns_and_stays_hidden` |
+
+`scd mv/up/down/rename` 的 `<目标>` 复用 `jump::resolve`，所以编号、别名、路径三种写法都能指定；
+执行成功后把新的完整顺序打印出来，用户不必再 `scd list` 确认。
+
+## 9. 已知取舍
+
+* **顺序不会自己变好**：常用目录不会自动上浮，需要用户 `scd mv/up` 或手改 `config.json`
+  （这是 0.2.0 的有意取舍：编号稳定 > 自动优化）。
 * **不做自动学习**：只有显式 `a` / `scd add` 才会入库，`scd <任意路径>` 不写历史，避免配置膨胀。
 * **名称不是主键**：重名会自动加后缀（`same (nested)`、`same (2)`），匹配歧义时报错并列出候选。
 * **cmd.exe 支持有限**：批处理包装要求 `<安装目录>\shell` 在 PATH 中排在 `bin` 之前，

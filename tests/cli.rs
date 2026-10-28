@@ -60,6 +60,13 @@ impl Sandbox {
             .current_dir(&self.root)
             .env("SCD_CONFIG", &self.config)
             .env("SCD_NO_HINT", "1")
+            // Hermetic: an ambient CLICOLOR_FORCE in the developer's environment must not
+            // change what these tests see. Colour gets its own tests below.
+            .env("SCD_COLOR", "never")
+            .env_remove("NO_COLOR")
+            .env_remove("CLICOLOR")
+            .env_remove("CLICOLOR_FORCE")
+            .env_remove("TERM")
             .env_remove("SCD_HOME")
             .env_remove("SCD_TARGET_FILE")
             .env_remove("SCD_CD")
@@ -90,6 +97,22 @@ impl Sandbox {
             stdin.write_all(input.as_bytes()).expect("write stdin");
             stdin.flush().expect("flush stdin");
         }
+        child.wait_with_output().expect("wait for scd")
+    }
+
+    /// Same as [`Sandbox::run`] but with colour forced on.
+    fn run_colored(&self, args: &[&str]) -> Output {
+        let mut command = self.command();
+        command.env("SCD_COLOR", "always").args(args);
+        command.spawn().expect("spawn scd").wait_with_output().expect("wait for scd")
+    }
+
+    /// Same as [`Sandbox::feed_args`] but with colour forced on.
+    fn feed_args_colored(&self, args: &[&str]) -> Output {
+        let mut command = self.command();
+        command.env("SCD_COLOR", "always").args(args);
+        let mut child = command.spawn().expect("spawn scd");
+        drop(child.stdin.take());
         child.wait_with_output().expect("wait for scd")
     }
 
@@ -186,6 +209,7 @@ fn bare_scd_shows_the_documented_menu() {
     assert!(text.contains(&abs(&first).display().to_string()), "{text}");
     assert!(text.contains(&abs(&second).display().to_string()), "{text}");
     assert!(text.contains("[q] quit"), "{text}");
+    assert!(text.contains("the order is yours"), "{text}");
     assert!(text.contains("scd> "), "{text}");
     assert!(text.contains("bye"), "{text}");
     assert_eq!(stdout(&out), "", "quitting must not emit a jump target");
@@ -336,9 +360,9 @@ fn add_flow_handles_quoted_and_unicode_paths() {
 
     let cfg = sandbox.config();
     assert_eq!(cfg.locations.len(), 2);
-    assert!(paths::same_path(&cfg.locations[1].path, &abs(&spaced)));
-    assert!(paths::same_path(&cfg.locations[0].path, &abs(&cjk)));
-    assert_eq!(cfg.locations[0].name, "工作目录");
+    assert!(paths::same_path(&cfg.locations[0].path, &abs(&spaced)), "added first, stays first");
+    assert!(paths::same_path(&cfg.locations[1].path, &abs(&cjk)));
+    assert_eq!(cfg.locations[1].name, "工作目录");
     assert!(sandbox.config_text().contains("工作目录"), "config.json keeps UTF-8 names");
 
     // Jumping back by name works for the unicode entry too.
@@ -356,10 +380,12 @@ fn add_non_interactively() {
     assert!(stdout(&out).starts_with("added [1] "), "{}", stdout(&out));
     assert_eq!(sandbox.config().locations.len(), 1);
 
-    // `scd add` with no argument means "here".
+    // `scd add` with no argument means "here"; it is appended, so the first entry stays [1].
     let out = sandbox.run(&["add"]);
     assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
-    assert!(paths::same_path(&sandbox.config().locations[0].path, &abs(&sandbox.root)));
+    assert!(stdout(&out).starts_with("added [2] "), "{}", stdout(&out));
+    assert!(paths::same_path(&sandbox.config().locations[1].path, &abs(&sandbox.root)));
+    assert!(paths::same_path(&sandbox.config().locations[0].path, &abs(&target)));
 
     // A bad path is a target error, not a crash.
     let out = sandbox.run(&["add", "Z:\\definitely\\not\\here"]);
@@ -429,10 +455,14 @@ fn jump_by_path_number_and_name() {
     let first = sandbox.add_dir("alpha");
     let second = sandbox.add_dir("beta");
 
-    // By number: the menu lists the most recently added first.
-    let out = sandbox.run(&["2"]);
+    // By number: entries are appended, so [1] is the first one added.
+    let out = sandbox.run(&["1"]);
     assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
     assert_eq!(stdout(&out).trim(), abs(&first).display().to_string());
+
+    let out = sandbox.run(&["2"]);
+    assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
+    assert_eq!(stdout(&out).trim(), abs(&second).display().to_string());
 
     // By name.
     let out = sandbox.run(&["beta"]);
@@ -501,32 +531,34 @@ fn unwrapped_call_explains_how_to_change_directory() {
 }
 
 #[test]
-fn jumping_reorders_the_menu_and_counts_visits() {
-    let mut sandbox = Sandbox::new("mru");
+fn jumping_never_reorders_but_does_count_visits() {
+    let mut sandbox = Sandbox::new("stable-order");
     let alpha = sandbox.add_dir("alpha");
     let beta = sandbox.add_dir("beta");
-    assert!(paths::same_path(&sandbox.config().locations[0].path, &abs(&beta)));
+    assert!(paths::same_path(&sandbox.config().locations[0].path, &abs(&alpha)));
 
-    let out = sandbox.feed("2\n"); // 2 == alpha
+    let out = sandbox.feed("2\n"); // 2 == beta
     assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
-    assert_eq!(stdout(&out).trim(), abs(&alpha).display().to_string());
+    assert_eq!(stdout(&out).trim(), abs(&beta).display().to_string());
 
     let cfg = sandbox.config();
     assert!(
         paths::same_path(&cfg.locations[0].path, &abs(&alpha)),
-        "used location moves to the top"
+        "the first entry stays first after a jump"
     );
-    assert_eq!(cfg.locations[0].visits, 1);
-    assert_eq!(cfg.locations[1].visits, 0);
-    assert!(cfg.locations[0].last_used_at > 0);
+    assert!(paths::same_path(&cfg.locations[1].path, &abs(&beta)));
+    assert_eq!(cfg.locations[0].visits, 0);
+    assert_eq!(cfg.locations[1].visits, 1, "usage is recorded as metadata only");
+    assert!(cfg.locations[1].last_used_at > 0);
 
-    // The next menu reflects the new order.
+    // The next menu shows exactly the same numbers.
     let text = combined(&sandbox.feed("q\n"));
     let alpha_line = text
         .lines()
         .find(|line| line.contains(&abs(&alpha).display().to_string()))
         .expect("alpha is listed");
     assert!(alpha_line.contains("[1]"), "{alpha_line}");
+    assert!(text.contains("the order is yours"), "the menu advertises the reorder commands: {text}");
 }
 
 #[test]
@@ -623,7 +655,7 @@ fn remove_forgets_a_location() {
 
     let out = sandbox.run(&["rm", "beta"]);
     assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
-    assert!(stdout(&out).starts_with("removed [1] "), "{}", stdout(&out));
+    assert!(stdout(&out).starts_with("removed [2] "), "{}", stdout(&out));
     let cfg = sandbox.config();
     assert_eq!(cfg.locations.len(), 1);
     assert!(paths::same_path(&cfg.locations[0].path, &abs(&alpha)));
@@ -765,10 +797,10 @@ fn ambiguous_name_lists_the_choices() {
     assert!(text.contains("proj-alpha") && text.contains("proj-beta"), "{text}");
     assert!(text.contains("[1] [2]"), "{text}");
 
-    // Numbers disambiguate.
+    // Numbers disambiguate; [1] is the one added first.
     let out = sandbox.run(&["1"]);
     assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
-    assert_eq!(stdout(&out).trim(), abs(&beta).display().to_string());
+    assert_eq!(stdout(&out).trim(), abs(&alpha).display().to_string());
 }
 
 #[test]
@@ -779,4 +811,309 @@ fn read_only_commands_never_create_a_config_file() {
         sandbox.run(&refs);
     }
     assert!(!sandbox.config.exists(), "read-only commands must not write a config file");
+}
+// --------------------------------------------------------------------------- colour
+
+/// Strip ANSI escapes so coloured output can be compared with its plain counterpart.
+fn plain(text: &str) -> String {
+    scd::color::strip_ansi(text)
+}
+
+fn has_escapes(text: &str) -> bool {
+    text.contains('\u{1b}')
+}
+
+#[test]
+fn colour_is_off_when_output_is_redirected() {
+    let mut sandbox = Sandbox::new("color-auto");
+    let target = sandbox.add_dir("plain");
+    // The sandbox pins SCD_COLOR=never; "auto" would behave the same because stdout is a pipe.
+    let mut command = sandbox.command();
+    command.env_remove("SCD_COLOR").arg(target.to_str().unwrap());
+    let out = command.output().expect("run scd");
+    assert!(!has_escapes(&stdout(&out)), "redirected stdout must stay byte clean");
+    assert!(!has_escapes(&stderr(&out)), "redirected stderr must stay byte clean");
+}
+
+#[test]
+fn scd_color_always_paints_the_menu_but_not_the_target() {
+    let mut sandbox = Sandbox::new("color-always");
+    let target = sandbox.add_dir("painted");
+
+    // Menu chrome: coloured.
+    let out = sandbox.feed_args_colored(&["list"]);
+    let text = stdout(&out);
+    assert!(has_escapes(&text), "SCD_COLOR=always must emit escapes: {text:?}");
+    assert!(text.contains("\u{1b}[1;32m"), "alias in bold green: {text:?}");
+    assert!(text.contains("\u{1b}[1;36m"), "path in bold cyan: {text:?}");
+    assert_eq!(plain(&text), stdout(&sandbox.run(&["list"])), "colour changes nothing but style");
+
+    // The machine-readable jump target: never coloured, whatever the user asks for.
+    let out = sandbox.run_colored(&[target.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
+    let raw = stdout(&out);
+    assert!(!has_escapes(&raw), "stdout is consumed by `cd \"$(scd ...)\"`: {raw:?}");
+    assert_eq!(raw.trim(), abs(&target).display().to_string());
+    assert!(has_escapes(&stderr(&out)), "the human line on stderr is coloured");
+    assert!(stderr(&out).contains("\u{1b}[1;36m"), "{:?}", stderr(&out));
+}
+
+#[test]
+fn target_file_payload_is_never_coloured() {
+    let mut sandbox = Sandbox::new("color-targetfile");
+    let target = sandbox.add_dir("wrapped-color");
+    let target_file = sandbox.root.join("scd-target.txt");
+
+    let mut command = sandbox.command();
+    command
+        .env("SCD_COLOR", "always")
+        .env("SCD_TARGET_FILE", &target_file)
+        .arg(target.to_str().unwrap());
+    let out = command.output().expect("run scd");
+    assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
+
+    let written = fs::read_to_string(&target_file).expect("target file");
+    assert!(!has_escapes(&written), "the shell wrapper reads this verbatim: {written:?}");
+    assert_eq!(written.trim(), abs(&target).display().to_string());
+    assert!(has_escapes(&stdout(&out)), "the UI on stdout is coloured");
+}
+
+#[test]
+fn no_color_beats_clicolor_force_and_scd_color_auto() {
+    let mut sandbox = Sandbox::new("no-color");
+    sandbox.add_dir("quiet");
+    let mut command = sandbox.command();
+    command
+        .env_remove("SCD_COLOR")
+        .env("NO_COLOR", "1")
+        .env("CLICOLOR_FORCE", "1")
+        .arg("list");
+    let out = command.output().expect("run scd");
+    assert!(!has_escapes(&stdout(&out)), "NO_COLOR must win: {:?}", stdout(&out));
+}
+
+#[test]
+fn scd_color_never_keeps_config_writes_plain() {
+    let sandbox = Sandbox::new("color-config-json");
+    let mut command = sandbox.command();
+    command.env("SCD_COLOR", "always").args(["add", "."]);
+    let out = command.output().expect("run scd");
+    assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
+    let text = sandbox.config_text();
+    assert!(!has_escapes(&text), "config.json must never contain escape codes: {text}");
+    assert!(serde_like_parse(&text), "config.json stays valid JSON");
+    assert!(has_escapes(&stdout(&out)), "the confirmation message is coloured");
+    assert_eq!(plain(&stdout(&out)).trim_start(), plain(&stdout(&out)).trim_start());
+}
+
+/// The project has no JSON dependency in tests either, so validate by round-tripping
+/// through the library that wrote the file.
+fn serde_like_parse(text: &str) -> bool {
+    scd::json::Json::parse(text).is_ok()
+}
+
+#[test]
+fn help_is_coloured_only_when_asked() {
+    let sandbox = Sandbox::new("color-help");
+    let mut command = sandbox.command();
+    command.env("SCD_COLOR", "always").arg("--help");
+    let colored = stdout(&command.output().expect("run scd"));
+    assert!(has_escapes(&colored));
+    assert!(colored.contains("\u{1b}[1;4mUSAGE:\u{1b}[0m"), "headings are bold+underline");
+
+    let plain_help = stdout(&sandbox.run(&["--help"]));
+    assert!(!has_escapes(&plain_help));
+    assert_eq!(plain(&colored), plain_help, "the guide text is identical in both modes");
+}
+
+#[test]
+fn errors_and_hints_are_coloured() {
+    let mut sandbox = Sandbox::new("color-errors");
+    sandbox.add_dir("only-color");
+    let mut command = sandbox.command();
+    command.env("SCD_COLOR", "always").arg("not-a-real-place");
+    let out = command.output().expect("run scd");
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
+    assert!(err.contains("\u{1b}[1;31mscd:\u{1b}[0m"), "red `scd:` prefix: {err:?}");
+    assert!(err.contains("\u{1b}[33mhint:\u{1b}[0m"), "yellow hint: {err:?}");
+    assert_eq!(plain(&err), stderr(&sandbox.run(&["not-a-real-place"])));
+    assert_eq!(stdout(&out), "", "a failed jump still prints no target");
+}
+// --------------------------------------------------------------------------- order & aliases
+
+/// The saved aliases, in menu order.
+fn order(sandbox: &Sandbox) -> Vec<String> {
+    sandbox.config().locations.iter().map(|location| location.name.clone()).collect()
+}
+
+#[test]
+fn add_appends_so_existing_numbers_stay_valid() {
+    let mut sandbox = Sandbox::new("append");
+    let alpha = sandbox.add_dir("alpha");
+    let beta = sandbox.add_dir("beta");
+    assert_eq!(stdout(&sandbox.run(&["1"])).trim(), abs(&alpha).display().to_string());
+    assert_eq!(stdout(&sandbox.run(&["2"])).trim(), abs(&beta).display().to_string());
+
+    let gamma = sandbox.make_dir("gamma");
+    let out = sandbox.run(&["add", gamma.to_str().unwrap()]);
+    assert!(stdout(&out).starts_with("added [3] "), "{}", stdout(&out));
+
+    let cfg = sandbox.config();
+    assert_eq!(cfg.locations.len(), 3);
+    assert!(paths::same_path(&cfg.locations[0].path, &abs(&alpha)));
+    assert!(paths::same_path(&cfg.locations[1].path, &abs(&beta)));
+    assert!(paths::same_path(&cfg.locations[2].path, &abs(&gamma)));
+
+    // The numbers the user already knows still point at the same places.
+    assert_eq!(stdout(&sandbox.run(&["1"])).trim(), abs(&alpha).display().to_string());
+    assert_eq!(stdout(&sandbox.run(&["2"])).trim(), abs(&beta).display().to_string());
+    assert_eq!(stdout(&sandbox.run(&["3"])).trim(), abs(&gamma).display().to_string());
+}
+
+#[test]
+fn mv_up_and_down_reorder_and_persist() {
+    let mut sandbox = Sandbox::new("reorder");
+    sandbox.add_dir("one");
+    sandbox.add_dir("two");
+    sandbox.add_dir("three");
+    for (index, name) in [(1, "one"), (2, "two"), (3, "three")] {
+        let out = sandbox.run(&["rename", &index.to_string(), name]);
+        assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
+    }
+    assert_eq!(order(&sandbox), vec!["one", "two", "three"]);
+
+    let out = sandbox.run(&["mv", "three", "1"]);
+    assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
+    assert!(stdout(&out).contains("moved three: [3] -> [1]"), "{}", stdout(&out));
+    assert!(stdout(&out).contains("[1] three"), "the new order is printed: {}", stdout(&out));
+    assert_eq!(order(&sandbox), vec!["three", "one", "two"]);
+
+    let out = sandbox.run(&["down", "three"]);
+    assert!(stdout(&out).contains("moved three: [1] -> [2]"), "{}", stdout(&out));
+    assert_eq!(order(&sandbox), vec!["one", "three", "two"]);
+
+    let out = sandbox.run(&["up", "2"]);
+    assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
+    assert_eq!(order(&sandbox), vec!["three", "one", "two"]);
+
+    // Both ends are clamped, not wrapped.
+    let out = sandbox.run(&["up", "1"]);
+    assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
+    assert!(stdout(&out).contains("already at the top"), "{}", stdout(&out));
+    let out = sandbox.run(&["down", "3"]);
+    assert!(stdout(&out).contains("already at the bottom"), "{}", stdout(&out));
+    assert_eq!(order(&sandbox), vec!["three", "one", "two"]);
+
+    // Out of range, and a target that is not saved: nothing changes.
+    let out = sandbox.run(&["mv", "one", "9"]);
+    assert_eq!(out.status.code(), Some(1), "{}", combined(&out));
+    assert!(stderr(&out).contains("1..3"), "{}", stderr(&out));
+    let out = sandbox.run(&["mv", "ghost", "1"]);
+    assert_eq!(out.status.code(), Some(1), "{}", combined(&out));
+    assert!(stderr(&out).contains("scd:"), "{}", stderr(&out));
+    assert_eq!(order(&sandbox), vec!["three", "one", "two"]);
+    assert_eq!(stdout(&sandbox.run(&["1"])).trim(), order_path(&sandbox, 0));
+}
+
+fn order_path(sandbox: &Sandbox, index: usize) -> String {
+    sandbox.config().locations[index].path.display().to_string()
+}
+
+#[test]
+fn rename_changes_the_alias_and_keeps_the_path() {
+    let mut sandbox = Sandbox::new("rename");
+    let target = sandbox.add_dir("before");
+
+    let out = sandbox.run(&["rename", "1", "之后"]);
+    assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
+    let text = stdout(&out);
+    assert!(text.contains("renamed [1]"), "{text}");
+    assert!(text.contains("之后"), "{text}");
+    assert!(text.contains(&abs(&target).display().to_string()), "{text}");
+
+    let cfg = sandbox.config();
+    assert_eq!(cfg.locations[0].name, "之后");
+    assert!(paths::same_path(&cfg.locations[0].path, &abs(&target)), "the path is untouched");
+    assert_eq!(stdout(&sandbox.run(&["之后"])).trim(), abs(&target).display().to_string());
+
+    // Names may contain spaces.
+    let out = sandbox.run(&["rename", "1", "my", "big", "project"]);
+    assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
+    assert_eq!(sandbox.config().locations[0].name, "my big project");
+    assert_eq!(
+        stdout(&sandbox.run(&["my big project"])).trim(),
+        abs(&target).display().to_string()
+    );
+}
+
+#[test]
+fn rename_refuses_empty_and_duplicate_names() {
+    let mut sandbox = Sandbox::new("rename-bad");
+    sandbox.add_dir("first");
+    sandbox.add_dir("second");
+    assert_eq!(sandbox.run(&["rename", "1", "alpha"]).status.code(), Some(0));
+
+    let out = sandbox.run(&["rename", "2", "alpha"]);
+    assert_eq!(out.status.code(), Some(1), "{}", combined(&out));
+    assert!(stderr(&out).contains("already used by location [1]"), "{}", stderr(&out));
+
+    let out = sandbox.run(&["rename", "2", "   "]);
+    assert_eq!(out.status.code(), Some(1), "{}", combined(&out));
+    assert!(stderr(&out).contains("cannot be empty"), "{}", stderr(&out));
+
+    let out = sandbox.run(&["rename", "9", "x"]);
+    assert_eq!(out.status.code(), Some(1), "{}", combined(&out));
+    // The number is rejected by target resolution, with the range spelled out.
+    assert!(stderr(&out).contains("out of range"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("use 1..2"), "{}", stderr(&out));
+
+    assert_eq!(order(&sandbox), vec!["alpha", "2-second"], "refused renames change nothing");
+}
+
+#[test]
+fn a_new_entry_beyond_max_display_warns_and_stays_hidden() {
+    let mut sandbox = Sandbox::new("hidden-add");
+    sandbox.add_dir("first");
+    let mut cfg = sandbox.config();
+    cfg.set_max_display(1).unwrap();
+    cfg.save(&sandbox.config).unwrap();
+
+    let second = sandbox.make_dir("second");
+    let out = sandbox.run(&["add", second.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
+    let text = stdout(&out);
+    assert!(text.starts_with("added [2] "), "{text}");
+    assert!(text.contains("past \"max locations to display\""), "{text}");
+    assert!(text.contains("scd mv 2 1"), "{text}");
+
+    let menu = combined(&sandbox.feed("q\n"));
+    assert!(menu.contains("[1] "), "{menu}");
+    assert!(!menu.contains("[2] "), "{menu}");
+    assert!(menu.contains("2 saved, 1 hidden"), "{menu}");
+
+    // Bringing it to the top makes it visible without touching the limit.
+    let out = sandbox.run(&["mv", "2", "1"]);
+    assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
+    let menu = combined(&sandbox.feed("q\n"));
+    assert!(menu.contains(&abs(&second).display().to_string()), "{menu}");
+}
+
+#[test]
+fn hand_edited_order_is_respected() {
+    let mut sandbox = Sandbox::new("handmade-order");
+    let alpha = sandbox.add_dir("alpha");
+    let beta = sandbox.add_dir("beta");
+    let gamma = sandbox.add_dir("gamma");
+
+    // The user rearranges config.json by hand: gamma, alpha, beta.
+    let mut cfg = sandbox.config();
+    cfg.locations.rotate_left(2);
+    cfg.save(&sandbox.config).unwrap();
+
+    assert_eq!(stdout(&sandbox.run(&["1"])).trim(), abs(&gamma).display().to_string());
+    assert_eq!(stdout(&sandbox.run(&["2"])).trim(), abs(&alpha).display().to_string());
+    assert_eq!(stdout(&sandbox.run(&["3"])).trim(), abs(&beta).display().to_string());
+    let text = stdout(&sandbox.run(&["list"]));
+    assert!(text.find("gamma").unwrap() < text.find("alpha").unwrap(), "{text}");
 }

@@ -17,6 +17,9 @@ use std::path::{Path, PathBuf};
 
 use crate::ui::{Stream, Ui};
 
+// Colour roles for the jump report live in crate::color; the machine-readable channels
+// (SCD_TARGET_FILE payload and the single stdout line) are deliberately never styled.
+
 pub struct Emitter {
     target_file: Option<PathBuf>,
     stream: Stream,
@@ -55,20 +58,41 @@ impl Emitter {
 
     /// Report a successful jump and return the process exit code.
     pub fn emit_jump(&self, target: &Path, ui: &Ui) -> i32 {
-        ui.line(&format!("-> {}", target.display()));
+        let palette = ui.palette();
+        let text = target.display().to_string();
+        ui.line(&format!("{} {}", palette.ok("->"), palette.path(&text)));
+
         if let Some(file) = &self.target_file {
-            let payload = format!("{}\n", target.display());
+            let payload = format!("{text}\n");
             if let Err(err) = fs::write(file, payload.as_bytes()) {
-                eprintln!("scd: cannot write {}: {}", file.display(), crate::ui::flatten(&err.to_string()));
+                let errors = Ui::stderr();
+                let error_palette = errors.palette();
+                errors.out(&format!(
+                    "{} cannot write {}: {}",
+                    error_palette.error_prefix(),
+                    error_palette.path(&file.display().to_string()),
+                    error_palette.err(&crate::ui::flatten(&err.to_string()))
+                ));
                 return crate::exit::CONFIG;
             }
         } else {
-            println!("{}", target.display());
+            println!("{text}");
         }
+
         if self.hint {
-            ui.line("scd cannot change this shell's directory by itself.");
-            ui.line(&format!("for now:  cd \"{}\"", target.display()));
-            ui.line("once:     install the shell function from shell/ (see 'scd --help').");
+            ui.line(&palette.warn("scd cannot change this shell's directory by itself."));
+            ui.line(&format!(
+                "{}  {} {}",
+                palette.dim("for now:"),
+                palette.bold("cd"),
+                palette.path(&format!("\"{text}\""))
+            ));
+            ui.line(&format!(
+                "{}     install the shell function from {} (see {}).",
+                palette.dim("once:"),
+                palette.path("shell/"),
+                palette.bold("'scd --help'")
+            ));
         }
         crate::exit::OK
     }

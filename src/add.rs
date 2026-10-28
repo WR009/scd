@@ -12,18 +12,25 @@
 
 use std::path::Path;
 
+use crate::color::Palette;
 use crate::config::{Added, Config};
+use crate::menu::styled_summary;
 use crate::paths;
 use crate::ui::Ui;
 
-/// The two instruction lines, verbatim from the specification.
-pub const HEADING: [&str; 2] = [
-    "type the new location, or type \"here\" to add the current location",
-    "type \"quit\" to cancel",
-];
-
 /// Prompt shown while waiting for the new location.
 pub const PROMPT: &str = "new location: ";
+
+/// The two instruction lines, verbatim from the specification (colour added on top).
+pub fn heading(palette: &Palette) -> Vec<String> {
+    vec![
+        format!(
+            "type the new location, or type {} to add the current location",
+            palette.bold("\"here\"")
+        ),
+        format!("type {} to cancel", palette.bold("\"quit\"")),
+    ]
+}
 
 /// What one round of input produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,15 +45,14 @@ pub enum Outcome {
 
 /// Interactive add: prompt until the input is usable or the user cancels.
 pub fn run(cfg: &mut Config, config_path: &Path, ui: &Ui) {
-    for line in HEADING {
-        ui.line(line);
-    }
+    let palette = ui.palette();
+    ui.lines(&heading(&palette));
     ui.blank();
 
     loop {
-        let Some(raw) = ui.ask(PROMPT) else {
+        let Some(raw) = ui.ask(&palette.prompt(PROMPT)) else {
             ui.blank();
-            ui.line("cancelled");
+            ui.line(&palette.dim("cancelled"));
             ui.blank();
             return;
         };
@@ -54,9 +60,9 @@ pub fn run(cfg: &mut Config, config_path: &Path, ui: &Ui) {
         if input.is_empty() {
             continue;
         }
-        match interpret(cfg, config_path, input) {
+        match interpret(cfg, config_path, input, &palette) {
             Outcome::Cancel => {
-                ui.line("cancelled");
+                ui.line(&palette.dim("cancelled"));
                 ui.blank();
                 return;
             }
@@ -74,22 +80,21 @@ pub fn run(cfg: &mut Config, config_path: &Path, ui: &Ui) {
 }
 
 /// `scd add [path]`: one shot, no prompting. Defaults to the current directory.
-pub fn non_interactive(cfg: &mut Config, config_path: &Path, target: Option<&str>) -> i32 {
+pub fn non_interactive(cfg: &mut Config, config_path: &Path, target: Option<&str>, ui: &Ui) -> i32 {
     let input = target.map(str::trim).filter(|text| !text.is_empty()).unwrap_or("here");
-    match interpret(cfg, config_path, input) {
+    match interpret(cfg, config_path, input, &ui.palette()) {
         Outcome::Cancel => {
-            crate::ui::print_line("cancelled");
+            ui.out(&ui.palette().dim("cancelled"));
             crate::exit::OK
         }
         Outcome::Done(lines) => {
-            for line in &lines {
-                crate::ui::print_line(line);
-            }
+            ui.out_lines(&lines);
             crate::exit::OK
         }
         Outcome::Retry(lines) => {
+            let palette = Palette::for_stream(crate::ui::Stream::Stderr);
             for line in &lines {
-                eprintln!("scd: {line}");
+                eprintln!("{} {}", palette.error_prefix(), palette.err(line));
             }
             crate::exit::TARGET
         }
@@ -97,7 +102,7 @@ pub fn non_interactive(cfg: &mut Config, config_path: &Path, target: Option<&str
 }
 
 /// Validate one answer and, when it is a directory, save it.
-pub fn interpret(cfg: &mut Config, config_path: &Path, input: &str) -> Outcome {
+pub fn interpret(cfg: &mut Config, config_path: &Path, input: &str, palette: &Palette) -> Outcome {
     let text = input.trim();
     if is_cancel(text) {
         return Outcome::Cancel;
@@ -110,11 +115,15 @@ pub fn interpret(cfg: &mut Config, config_path: &Path, input: &str) -> Outcome {
     };
 
     if !candidate.is_dir() {
-        let reason = if candidate.exists() { "that is a file, not a directory" } else { "no such directory" };
+        let reason =
+            if candidate.exists() { "that is a file, not a directory" } else { "no such directory" };
         return Outcome::Retry(vec![
-            format!("{reason}: {}", candidate.display()),
-            "type an absolute path, \"here\" for the current directory, or \"quit\" to cancel"
-                .to_string(),
+            format!("{}: {}", palette.err(reason), palette.path(&candidate.display().to_string())),
+            format!(
+                "type an absolute path, {} for the current directory, or {} to cancel",
+                palette.bold("\"here\""),
+                palette.bold("\"quit\"")
+            ),
         ]);
     }
 
@@ -122,16 +131,39 @@ pub fn interpret(cfg: &mut Config, config_path: &Path, input: &str) -> Outcome {
     let index = match added {
         Added::New(index) | Added::Existing(index) => index,
     };
-    let summary = cfg.locations[index].summary();
+    let summary = styled_summary(&cfg.locations[index], palette);
     if let Err(err) = cfg.save(config_path) {
-        return Outcome::Retry(vec![err]);
+        return Outcome::Retry(vec![palette.err(&err)]);
     }
 
     match added {
-        Added::New(_) => Outcome::Done(vec![format!("added [{}] {summary}", index + 1)]),
+        Added::New(_) => {
+            let mut lines = vec![format!(
+                "{} {} {}",
+                palette.ok("added"),
+                palette.key(&(index + 1).to_string()),
+                summary
+            )];
+            // Entries are appended, so a new one can land outside the visible part of the menu.
+            if index >= cfg.max_display {
+                lines.push(palette.warn(&format!(
+                    "note: [{}] is past \"max locations to display\" ({}), so the menu hides it - \
+                     raise the limit in [c], or bring it up with 'scd mv {} 1'",
+                    index + 1,
+                    cfg.max_display,
+                    index + 1
+                )));
+            }
+            Outcome::Done(lines)
+        }
         Added::Existing(_) => Outcome::Done(vec![
-            format!("already saved as [{}] {summary}", index + 1),
-            "nothing changed".to_string(),
+            format!(
+                "{} {} {}",
+                palette.warn("already saved as"),
+                palette.key(&(index + 1).to_string()),
+                summary
+            ),
+            palette.dim("nothing changed"),
         ]),
     }
 }
@@ -149,6 +181,8 @@ pub fn is_here(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::color::strip_ansi;
+    use crate::ui::Stream;
     use std::fs;
     use std::path::PathBuf;
 
@@ -160,6 +194,22 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("scd-add-{tag}-{}-{nanos}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn out() -> Ui {
+        Ui::plain(Stream::Stdout)
+    }
+
+    #[test]
+    fn heading_is_the_specification_text_verbatim() {
+        let lines = heading(&Palette::off());
+        assert_eq!(lines[0], "type the new location, or type \"here\" to add the current location");
+        assert_eq!(lines[1], "type \"quit\" to cancel");
+
+        let colored = heading(&Palette::on());
+        assert_eq!(strip_ansi(&colored[0]), lines[0]);
+        assert_eq!(strip_ansi(&colored[1]), lines[1]);
+        assert!(colored[0].contains("\x1b[1m\"here\"\x1b[0m"), "{:?}", colored[0]);
     }
 
     #[test]
@@ -178,7 +228,7 @@ mod tests {
         let config_path = dir.join("config.json");
         let mut cfg = Config::default();
 
-        match interpret(&mut cfg, &config_path, target.to_str().unwrap()) {
+        match interpret(&mut cfg, &config_path, target.to_str().unwrap(), &Palette::off()) {
             Outcome::Done(lines) => {
                 assert_eq!(lines.len(), 1);
                 assert!(lines[0].starts_with("added [1] project"), "{lines:?}");
@@ -195,14 +245,41 @@ mod tests {
     }
 
     #[test]
+    fn coloured_confirmation_highlights_name_and_path() {
+        let dir = workspace("colored");
+        let target = dir.join("project");
+        fs::create_dir_all(&target).unwrap();
+        let mut cfg = Config::default();
+        match interpret(&mut cfg, &dir.join("config.json"), target.to_str().unwrap(), &Palette::on())
+        {
+            Outcome::Done(lines) => {
+                assert_eq!(strip_ansi(&lines[0]).trim_start(), strip_ansi(&lines[0]).trim_start());
+                assert!(lines[0].starts_with("\x1b[1;32madded\x1b[0m "), "{:?}", lines[0]);
+                assert!(lines[0].contains("\x1b[1;32mproject\x1b[0m"), "{:?}", lines[0]);
+                assert!(
+                    lines[0].contains(&format!("\x1b[1;36m{}\x1b[0m", target.display())),
+                    "{:?}",
+                    lines[0]
+                );
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn second_add_is_reported_as_existing() {
         let dir = workspace("twice");
         let target = dir.join("project");
         fs::create_dir_all(&target).unwrap();
         let config_path = dir.join("config.json");
         let mut cfg = Config::default();
-        assert!(matches!(interpret(&mut cfg, &config_path, target.to_str().unwrap()), Outcome::Done(_)));
-        match interpret(&mut cfg, &config_path, target.to_str().unwrap()) {
+        let off = Palette::off();
+        assert!(matches!(
+            interpret(&mut cfg, &config_path, target.to_str().unwrap(), &off),
+            Outcome::Done(_)
+        ));
+        match interpret(&mut cfg, &config_path, target.to_str().unwrap(), &off) {
             Outcome::Done(lines) => {
                 assert!(lines[0].starts_with("already saved as [1]"), "{lines:?}");
                 assert_eq!(cfg.locations.len(), 1);
@@ -219,15 +296,16 @@ mod tests {
         fs::write(&file, "x").unwrap();
         let config_path = dir.join("config.json");
         let mut cfg = Config::default();
+        let off = Palette::off();
 
-        match interpret(&mut cfg, &config_path, file.to_str().unwrap()) {
+        match interpret(&mut cfg, &config_path, file.to_str().unwrap(), &off) {
             Outcome::Retry(lines) => {
                 assert!(lines[0].contains("file, not a directory"), "{lines:?}");
                 assert!(lines[1].contains("\"here\""), "{lines:?}");
             }
             other => panic!("expected Retry, got {other:?}"),
         }
-        match interpret(&mut cfg, &config_path, dir.join("ghost").to_str().unwrap()) {
+        match interpret(&mut cfg, &config_path, dir.join("ghost").to_str().unwrap(), &off) {
             Outcome::Retry(lines) => assert!(lines[0].contains("no such directory"), "{lines:?}"),
             other => panic!("expected Retry, got {other:?}"),
         }
@@ -241,7 +319,7 @@ mod tests {
         let dir = workspace("cancel");
         let config_path = dir.join("config.json");
         let mut cfg = Config::default();
-        assert_eq!(interpret(&mut cfg, &config_path, "quit"), Outcome::Cancel);
+        assert_eq!(interpret(&mut cfg, &config_path, "quit", &Palette::off()), Outcome::Cancel);
         assert!(cfg.is_empty());
         assert!(!config_path.exists());
         let _ = fs::remove_dir_all(&dir);
@@ -255,7 +333,7 @@ mod tests {
         let config_path = dir.join("config.json");
         let mut cfg = Config::default();
         let quoted = format!("\"{}\"", target.display());
-        match interpret(&mut cfg, &config_path, &quoted) {
+        match interpret(&mut cfg, &config_path, &quoted, &Palette::off()) {
             Outcome::Done(lines) => assert!(lines[0].contains("my projects"), "{lines:?}"),
             other => panic!("expected Done, got {other:?}"),
         }
@@ -267,8 +345,9 @@ mod tests {
         let dir = workspace("noninteractive");
         let config_path = dir.join("config.json");
         let mut cfg = Config::default();
+        let ui = out();
         // The test process runs in the crate root, which is a real directory.
-        assert_eq!(non_interactive(&mut cfg, &config_path, None), crate::exit::OK);
+        assert_eq!(non_interactive(&mut cfg, &config_path, None, &ui), crate::exit::OK);
         assert_eq!(cfg.locations.len(), 1);
         assert!(!cfg.locations[0].path.as_os_str().is_empty());
 
@@ -277,6 +356,7 @@ mod tests {
             &mut broken,
             &config_path,
             Some(if cfg!(windows) { r"Z:\nope\nope" } else { "/nonexistent/nope" }),
+            &ui,
         );
         assert_eq!(code, crate::exit::TARGET);
         assert!(broken.is_empty());

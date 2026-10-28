@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::emit::Emitter;
 use crate::paths;
+use crate::ui::Ui;
 
 /// A resolved jump destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,15 +109,17 @@ pub fn perform(
         Target::Saved(index) => (cfg.locations[index].path.clone(), Some(index)),
     };
     if !path.is_dir() {
-        eprintln!("scd: {}", Error::NotADirectory(path.display().to_string()));
+        report_error(&Error::NotADirectory(path.display().to_string()), false);
         return crate::exit::TARGET;
     }
 
-    // Most-recently-used bookkeeping: the location moves to the top of the next menu.
+    // Usage metadata only - the menu order belongs to the user and is never touched here.
     if let Some(index) = saved_index.or_else(|| cfg.index_of_path(&path)) {
-        cfg.touch(index);
+        cfg.record_visit(index);
         if let Err(err) = cfg.save(config_path) {
-            eprintln!("scd: {err}");
+            let diagnostics = Ui::stderr();
+            let palette = diagnostics.palette();
+            diagnostics.out(&format!("{} {}", palette.error_prefix(), palette.err(&err)));
         }
     }
     emitter.emit_jump(&path, ui)
@@ -128,13 +131,24 @@ pub fn query(cfg: &mut Config, config_path: &Path, text: &str, emitter: &Emitter
     match resolve(cfg, text) {
         Ok(target) => perform(cfg, config_path, target, &ui, emitter),
         Err(err) => {
-            let diagnostics = emitter.diagnostics();
-            diagnostics.line(&format!("scd: {err}"));
-            if matches!(err, Error::Unknown(_) | Error::IsAFile(_)) {
-                diagnostics.line("hint: 'scd' opens the menu, 'scd add <path>' saves a location");
-            }
+            let hint = matches!(err, Error::Unknown(_) | Error::IsAFile(_));
+            report_error(&err, hint);
             crate::exit::TARGET
         }
+    }
+}
+
+/// Print a resolution failure on stderr: red `scd:` prefix, red message, yellow hint.
+fn report_error(err: &Error, hint: bool) {
+    let diagnostics = Ui::stderr();
+    let palette = diagnostics.palette();
+    diagnostics.out(&format!("{} {}", palette.error_prefix(), palette.err(&err.to_string())));
+    if hint {
+        diagnostics.out(&format!(
+            "{} {}",
+            palette.warn("hint:"),
+            palette.dim("'scd' opens the menu, 'scd add <path>' saves a location")
+        ));
     }
 }
 
@@ -300,10 +314,13 @@ mod tests {
 
         let code = perform(&mut cfg, &config_path, Target::Saved(1), &emitter.ui(), &emitter);
         assert_eq!(code, crate::exit::OK);
-        assert_eq!(cfg.locations[0].name, "beta", "used location moves to the front");
-        assert_eq!(cfg.locations[0].visits, 1);
+        assert_eq!(cfg.locations[0].name, "alpha", "jumping must not reorder the menu");
+        assert_eq!(cfg.locations[1].name, "beta");
+        assert_eq!(cfg.locations[1].visits, 1);
+        assert_eq!(cfg.locations[0].visits, 0);
         let saved = Config::load(&config_path).unwrap();
-        assert_eq!(saved.locations[0].name, "beta");
+        assert_eq!(saved.locations[0].name, "alpha");
+        assert_eq!(saved.locations[1].visits, 1);
         let written = fs::read_to_string(dir.join("target.txt")).unwrap();
         assert_eq!(written.trim_end(), paths::absolute(&target).display().to_string());
         let _ = fs::remove_dir_all(&dir);

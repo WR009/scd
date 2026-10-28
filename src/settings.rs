@@ -7,6 +7,7 @@
 use std::path::Path;
 
 use crate::add::is_cancel;
+use crate::color::Palette;
 use crate::config::{Config, MAX_DISPLAY_LIMIT, MIN_MAX_DISPLAY};
 use crate::ui::Ui;
 
@@ -44,13 +45,14 @@ impl Setting {
         }
     }
 
-    /// The question line, e.g. `[1/1] max locations to display (1-99, ...; current: 9): `.
-    pub fn question(&self, index: usize, total: usize, cfg: &Config) -> String {
+    /// The question line, e.g. `[1/1] max locations to display (1-99, ...; current: 9): `
+    pub fn question(&self, index: usize, total: usize, cfg: &Config, palette: &Palette) -> String {
         format!(
-            "[{index}/{total}] {} ({}; current: {}): ",
-            self.label(),
-            self.hint(),
-            self.current(cfg)
+            "{} {} ({}; current: {}): ",
+            palette.key(&format!("{index}/{total}")),
+            palette.bold(self.label()),
+            palette.dim(self.hint()),
+            palette.number(&self.current(cfg))
         )
     }
 
@@ -72,21 +74,26 @@ impl Setting {
 
 /// Walk through every setting, then persist the result if anything changed.
 pub fn run(cfg: &mut Config, config_path: &Path, ui: &Ui) {
-    ui.line("configure scd");
-    ui.line(&format!("config file: {}", config_path.display()));
+    let palette = ui.palette();
+    ui.line(&palette.heading("configure scd"));
     ui.line(&format!(
+        "{} {}",
+        palette.dim("config file:"),
+        palette.path(&config_path.display().to_string())
+    ));
+    ui.line(&palette.dim(&format!(
         "{} setting(s) - press enter to keep a value, type \"quit\" to cancel",
         ALL.len()
-    ));
+    )));
     ui.blank();
 
     let total = ALL.len();
     let mut changed = false;
     for (index, setting) in ALL.iter().enumerate() {
         loop {
-            let Some(raw) = ui.ask(&setting.question(index + 1, total, cfg)) else {
+            let Some(raw) = ui.ask(&setting.question(index + 1, total, cfg, &palette)) else {
                 ui.blank();
-                ui.line("cancelled");
+                ui.line(&palette.dim("cancelled"));
                 ui.blank();
                 return;
             };
@@ -95,29 +102,39 @@ pub fn run(cfg: &mut Config, config_path: &Path, ui: &Ui) {
                 break; // keep the current value, move on to the next setting
             }
             if is_cancel(input) {
-                ui.line("cancelled");
+                ui.line(&palette.dim("cancelled"));
                 ui.blank();
                 return;
             }
             match setting.apply(cfg, input) {
                 Ok(()) => {
                     changed = true;
-                    ui.line(&format!("{} = {}", setting.label(), setting.current(cfg)));
+                    ui.line(&format!(
+                        "{} {}",
+                        palette.bold(setting.label()),
+                        palette.number(&format!("= {}", setting.current(cfg)))
+                    ));
                     break;
                 }
-                Err(message) => ui.line(&format!("scd: {message}")),
+                Err(message) => {
+                    ui.line(&format!("{} {}", palette.error_prefix(), palette.err(&message)))
+                }
             }
         }
     }
 
     if !changed {
-        ui.line("no changes");
+        ui.line(&palette.dim("no changes"));
         ui.blank();
         return;
     }
     match cfg.save(config_path) {
-        Ok(()) => ui.line(&format!("saved {}", config_path.display())),
-        Err(err) => ui.line(&format!("scd: {err}")),
+        Ok(()) => ui.line(&format!(
+            "{} {}",
+            palette.ok("saved"),
+            palette.path(&config_path.display().to_string())
+        )),
+        Err(err) => ui.line(&format!("{} {}", palette.error_prefix(), palette.err(&err))),
     }
     ui.blank();
 }
@@ -125,6 +142,7 @@ pub fn run(cfg: &mut Config, config_path: &Path, ui: &Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::color::strip_ansi;
 
     #[test]
     fn exactly_one_setting_is_asked_today() {
@@ -138,11 +156,23 @@ mod tests {
     fn question_mentions_index_hint_and_current_value() {
         let mut cfg = Config::default();
         cfg.set_max_display(4).unwrap();
-        let question = Setting::MaxDisplay.question(1, ALL.len(), &cfg);
+        let question = Setting::MaxDisplay.question(1, ALL.len(), &cfg, &Palette::off());
         assert_eq!(
             question,
             "[1/1] max locations to display (1-99, how many locations the menu lists; current: 4): "
         );
+    }
+
+    #[test]
+    fn coloured_question_keeps_its_text() {
+        let mut cfg = Config::default();
+        cfg.set_max_display(4).unwrap();
+        let plain = Setting::MaxDisplay.question(1, ALL.len(), &cfg, &Palette::off());
+        let colored = Setting::MaxDisplay.question(1, ALL.len(), &cfg, &Palette::on());
+        assert_eq!(strip_ansi(&colored), plain);
+        assert!(colored.contains("\x1b[1;33m1/1\x1b[0m"), "{colored:?}");
+        assert!(colored.contains("\x1b[1;33m4\x1b[0m"), "current value is highlighted: {colored:?}");
+        assert!(colored.ends_with("): \x1b[0m") || colored.ends_with("): "), "{colored:?}");
     }
 
     #[test]

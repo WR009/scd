@@ -75,7 +75,7 @@ impl Location {
 /// Result of [`Config::add`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Added {
-    /// Inserted at this index (always the front of the list).
+    /// Appended at this index (the end of the list, so existing numbers never shift).
     New(usize),
     /// Already saved; holds the existing index.
     Existing(usize),
@@ -122,6 +122,10 @@ impl Config {
     }
 
     /// Save a directory; duplicates are reported instead of stored twice.
+    ///
+    /// New entries are **appended**: the order of `locations` belongs to the user, so adding
+    /// something must never renumber the menu. Use [`Config::move_to`] / [`Config::shift`]
+    /// (or edit `config.json`) to arrange them.
     pub fn add(&mut self, path: PathBuf) -> Added {
         let resolved = paths::absolute(&path);
         if let Some(index) = self.index_of_path(&resolved) {
@@ -129,8 +133,8 @@ impl Config {
         }
         let mut location = Location::new(resolved);
         self.make_name_unique(&mut location);
-        self.locations.insert(0, location);
-        Added::New(0)
+        self.locations.push(location);
+        Added::New(self.locations.len() - 1)
     }
 
     /// Find a saved location by path (platform-appropriate comparison).
@@ -139,19 +143,76 @@ impl Config {
         self.locations.iter().position(|location| paths::same_path(&location.path, &resolved))
     }
 
-    /// Mark a location as used: count the visit and move it to the front.
-    pub fn touch(&mut self, index: usize) {
-        if index >= self.locations.len() {
-            return;
+    /// Count a visit.
+    ///
+    /// Deliberately does **not** reorder: usage statistics are metadata for `scd list`, not a
+    /// ranking. The menu order only changes when the user asks for it.
+    pub fn record_visit(&mut self, index: usize) {
+        if let Some(location) = self.locations.get_mut(index) {
+            location.visits = location.visits.saturating_add(1);
+            location.last_used_at = time::unix_now();
         }
-        let mut location = self.locations.remove(index);
-        location.visits = location.visits.saturating_add(1);
-        location.last_used_at = time::unix_now();
-        self.locations.insert(0, location);
     }
 
     pub fn remove(&mut self, index: usize) -> Location {
         self.locations.remove(index)
+    }
+
+    /// Move a location to another 0-based position. Returns its new index.
+    pub fn move_to(&mut self, from: usize, to: usize) -> Result<usize, String> {
+        let count = self.locations.len();
+        if from >= count {
+            return Err(no_such_index(from));
+        }
+        if to >= count {
+            return Err(format!(
+                "position {} does not exist: you have {count} location(s), so use 1..{count}",
+                to + 1
+            ));
+        }
+        if from == to {
+            return Ok(from);
+        }
+        let location = self.locations.remove(from);
+        self.locations.insert(to, location);
+        Ok(to)
+    }
+
+    /// Move one step towards the top (`delta < 0`) or the bottom (`delta > 0`), clamped.
+    pub fn shift(&mut self, index: usize, delta: i32) -> Result<usize, String> {
+        let count = self.locations.len();
+        if index >= count {
+            return Err(no_such_index(index));
+        }
+        let target = ((index as i64) + (delta as i64)).clamp(0, (count - 1) as i64) as usize;
+        self.move_to(index, target)
+    }
+
+    /// Change a location's alias. Empty names and names taken by another location are refused.
+    pub fn rename(&mut self, index: usize, name: &str) -> Result<(), String> {
+        let cleaned = name.trim();
+        if cleaned.is_empty() {
+            return Err("the new name cannot be empty".to_string());
+        }
+        if cleaned.chars().count() > 60 {
+            return Err("the new name is too long (60 characters max)".to_string());
+        }
+        let folded = cleaned.to_lowercase();
+        if let Some(other) = self.locations.iter().position(|l| l.name.to_lowercase() == folded) {
+            if other != index {
+                return Err(format!(
+                    "\"{cleaned}\" is already used by location [{}]; pick another name",
+                    other + 1
+                ));
+            }
+        }
+        match self.locations.get_mut(index) {
+            Some(location) => {
+                location.name = cleaned.to_string();
+                Ok(())
+            }
+            None => Err(no_such_index(index)),
+        }
     }
 
     /// Match a typed name against saved locations, strongest tier first:
@@ -323,6 +384,10 @@ impl Config {
 /// One-line rendering of an I/O error for user-facing messages.
 fn io_err(err: &io::Error) -> String {
     crate::ui::flatten(&err.to_string())
+}
+
+fn no_such_index(index: usize) -> String {
+    format!("there is no location [{}]", index + 1)
 }
 
 fn indices(values: &[String], matches: impl Fn(&str) -> bool) -> Vec<usize> {
@@ -557,7 +622,7 @@ mod tests {
         config.add(sample(&dir, "one").path.clone());
         config.add(sample(&dir, "two").path.clone());
         config.set_max_display(3).unwrap();
-        config.touch(1);
+        config.record_visit(1);
 
         config.save(&path).unwrap();
         let text = fs::read_to_string(&path).unwrap();
@@ -587,26 +652,108 @@ mod tests {
         config.add(beta.clone());
         assert_eq!(config.locations.len(), 2);
         let names: Vec<&str> = config.locations.iter().map(|l| l.name.as_str()).collect();
-        assert_eq!(names[0], "same (nested)", "{names:?}");
-        assert_eq!(names[1], "same");
+        assert_eq!(names[0], "same", "appended: the first entry keeps its place");
+        assert_eq!(names[1], "same (nested)", "{names:?}");
+        cleanup(&dir);
+    }
+
+    fn names(config: &Config) -> Vec<String> {
+        config.locations.iter().map(|location| location.name.clone()).collect()
+    }
+
+    #[test]
+    fn add_appends_so_existing_numbers_never_shift() {
+        let dir = workspace("append");
+        let mut config = Config::default();
+        assert_eq!(config.add(sample(&dir, "one").path.clone()), Added::New(0));
+        assert_eq!(config.add(sample(&dir, "two").path.clone()), Added::New(1));
+        assert_eq!(config.add(sample(&dir, "three").path.clone()), Added::New(2));
+        assert_eq!(names(&config), vec!["one", "two", "three"]);
         cleanup(&dir);
     }
 
     #[test]
-    fn touch_moves_to_front_and_counts_visits() {
-        let dir = workspace("touch");
+    fn record_visit_counts_without_reordering() {
+        let dir = workspace("visit");
         let mut config = Config::default();
         config.add(sample(&dir, "one").path.clone());
         config.add(sample(&dir, "two").path.clone());
         config.add(sample(&dir, "three").path.clone());
-        assert_eq!(config.locations[0].name, "three");
+        let before = names(&config);
 
-        config.touch(2); // "one" was added first, so it sits last
-        assert_eq!(config.locations[0].name, "one");
+        config.record_visit(2);
+        config.record_visit(2);
+        config.record_visit(0);
+        assert_eq!(names(&config), before, "usage must never reorder the menu");
+        assert_eq!(config.locations[2].visits, 2);
         assert_eq!(config.locations[0].visits, 1);
-        assert!(config.locations[0].last_used_at >= config.locations[1].last_used_at);
-        config.touch(99); // out of range is a no-op, not a panic
-        assert_eq!(config.locations.len(), 3);
+        assert_eq!(config.locations[1].visits, 0);
+        assert!(config.locations[2].last_used_at > 0);
+        config.record_visit(99); // out of range is a no-op, not a panic
+        assert_eq!(names(&config), before);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn move_to_reorders_on_request() {
+        let dir = workspace("move");
+        let mut config = Config::default();
+        for name in ["one", "two", "three", "four"] {
+            config.add(sample(&dir, name).path.clone());
+        }
+        assert_eq!(names(&config), vec!["one", "two", "three", "four"]);
+
+        assert_eq!(config.move_to(3, 0).unwrap(), 0);
+        assert_eq!(names(&config), vec!["four", "one", "two", "three"]);
+        assert_eq!(config.move_to(0, 3).unwrap(), 3);
+        assert_eq!(names(&config), vec!["one", "two", "three", "four"]);
+        assert_eq!(config.move_to(1, 1).unwrap(), 1, "no-op move");
+        assert_eq!(names(&config), vec!["one", "two", "three", "four"]);
+
+        assert!(config.move_to(0, 4).unwrap_err().contains("1..4"));
+        assert!(config.move_to(9, 0).unwrap_err().contains("there is no location [10]"));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn shift_moves_one_step_and_clamps() {
+        let dir = workspace("shift");
+        let mut config = Config::default();
+        for name in ["one", "two", "three"] {
+            config.add(sample(&dir, name).path.clone());
+        }
+        assert_eq!(config.shift(0, 1).unwrap(), 1);
+        assert_eq!(names(&config), vec!["two", "one", "three"]);
+        assert_eq!(config.shift(1, -1).unwrap(), 0);
+        assert_eq!(names(&config), vec!["one", "two", "three"]);
+
+        assert_eq!(config.shift(0, -1).unwrap(), 0, "clamped at the top");
+        assert_eq!(names(&config), vec!["one", "two", "three"]);
+        assert_eq!(config.shift(2, 5).unwrap(), 2, "clamped at the bottom");
+        assert!(config.shift(7, 1).is_err());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn rename_changes_the_alias_only() {
+        let dir = workspace("rename");
+        let mut config = Config::default();
+        config.add(sample(&dir, "one").path.clone());
+        config.add(sample(&dir, "two").path.clone());
+        let path_before = config.locations[0].path.clone();
+
+        config.rename(0, "  项目一  ").unwrap();
+        assert_eq!(config.locations[0].name, "项目一", "trimmed and stored");
+        assert_eq!(config.locations[0].path, path_before, "the path is untouched");
+        assert_eq!(names(&config), vec!["项目一", "two"]);
+
+        config.rename(0, "项目一").unwrap(); // renaming to its own name is fine
+        assert!(config.rename(0, "two").unwrap_err().contains("already used by location [2]"));
+        assert!(config.rename(0, "   ").unwrap_err().contains("cannot be empty"));
+        assert!(config.rename(0, "").unwrap_err().contains("cannot be empty"));
+        assert!(config.rename(0, &"x".repeat(61)).unwrap_err().contains("too long"));
+        assert!(config.rename(9, "x").unwrap_err().contains("there is no location [10]"));
+        assert_eq!(names(&config), vec!["项目一", "two"], "failed renames change nothing");
         cleanup(&dir);
     }
 

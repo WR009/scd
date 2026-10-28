@@ -3,6 +3,8 @@
 在终端里快速跳转工作目录的小工具：敲 `scd` 弹出菜单，按数字就跳走；记得路径的话 `scd <路径>` 直接跳，连菜单都不用开。
 
 * 用 Rust 编写，**零第三方依赖**（断网也能 `cargo build`）
+* **0.2.0 起全程配色**：别名绿色、路径青色、按键黄色、错误红色，重定向时自动关闭
+* **0.2.0 起顺序固定**：不再按使用次数排名，新位置追加到末尾，别名可用 `scd rename` 改，顺序可用 `scd mv/up/down` 调
 * 配置就是一个 `config.json`，可以手改
 * Windows / Linux / macOS 都支持；PowerShell、bash、zsh、fish、cmd.exe 都有配套函数
 * 需求原文见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，实现说明见 [`docs/DESIGN.md`](docs/DESIGN.md)
@@ -116,7 +118,7 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
     scd>
 ```
 
-* 按 **数字** 跳到对应位置（跳转后该位置下次排到最前，最常用的一直在最上面）
+* 按 **数字** 跳到对应位置。**顺序是固定的**：跳转不会重排，编号永远指同一个位置
 * 按 **c** 进入配置：逐项询问需要修改的内容，目前只有一项——**最多显示多少个位置 n**；直接回车保持原值，输入 `quit` 取消。后续新增设置只需在 `src/settings.rs` 里加一项
 * 按 **a** 添加位置，提示语与 `docs/ARCHITECTURE.md` 一致：
 
@@ -145,6 +147,9 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 scd add .            # 保存当前目录（等价于菜单里的 a + here）
 scd add "D:\my dir"  # 保存指定目录
 scd rm proj          # 删除一个已保存位置（也可用编号或路径）
+scd rename 2 项目     # 改别名（支持空格：scd rename 2 my project）
+scd mv proj 1        # 把某个位置放到第 1 位
+scd up proj          # 上移一位（scd down proj 下移一位，到顶/到底会自动停住）
 scd list             # 列出全部位置，包括被 n 限制隐藏的
 scd config           # 显示当前使用的 config.json 路径
 scd -h | scd --help  # 用户指南
@@ -152,7 +157,19 @@ scd -V | scd --version
 scd --config D:\x\config.json list   # 临时用另一份配置
 ```
 
-### 5.4 `config.json`
+### 5.4 顺序与别名都由你控制
+
+* **不按使用次数排名**：`scd` 从不自动重排。跳转只会累加 `visits` / 更新 `last_used_at`
+  这两个统计值（`scd list` 里能看到），**不影响顺序**。
+* **新增位置追加到末尾**，所以你已经记住的编号不会因为加了一个新目录而错位。
+  如果新位置落在 `max_display` 之外，`scd add` 会直接提示你怎么把它提上来。
+* **想自己排**：`scd mv <目标> <位置>`、`scd up/down <目标>`，或者直接编辑 `config.json`
+  —— 数组顺序就是菜单顺序，改完存盘立即生效。
+* **想改别名**：`scd rename <目标> <新别名>`（目标可以是编号、旧别名或路径；新别名可含空格）。
+  重名会被拒绝并告诉你是谁占了这个名字，也可以直接改 `config.json` 里的 `name`。
+* 每次改动后 `scd` 会把新的顺序打印出来，不用再敲一次 `scd list` 确认。
+
+### 5.5 `config.json`
 
 ```json
 {
@@ -175,14 +192,47 @@ scd --config D:\x\config.json list   # 临时用另一份配置
 | `max_display` | 菜单最多显示多少个位置（`c` 修改的就是它，范围 1–99） |
 | `locations[].path` | 目录（也可只写一个字符串，例如 `"locations": ["D:\\code"]`） |
 | `locations[].name` | 菜单里的名字，默认取文件夹名，可手改（重名会自动加后缀区分） |
-| `visits` / `last_used_at` | 自动记录的访问次数与时间 |
+| `visits` / `last_used_at` | 自动记录的访问次数与时间（**只是统计，不参与排序**） |
 | `added_at` | 添加时间 |
 
-列表按“最近使用”排序，手改后保存即可生效；文件损坏时 scd 会报错并**拒绝覆盖**，方便你先备份。
+**数组顺序就是菜单顺序**，手改后保存即可生效；文件损坏时 scd 会报错并**拒绝覆盖**，方便你先备份。
 
 查找顺序：`--config` → `SCD_CONFIG` → `SCD_HOME/config.json` → `<exe目录>/../config.json`（即 `bin/` 的上一级，符合规定结构）→ `<exe目录>/config.json` → `~/.scd/config.json`。
 
-### 5.5 环境变量与退出码
+### 5.6 配色（0.2.0）
+
+在真实终端里 `scd` 的所有输出都会上色，角色固定：
+
+| 元素 | 颜色 | 例子 |
+| --- | --- | --- |
+| **位置别名 / 文件夹名** | 粗体绿 | `scd`、`工作目录` |
+| **路径** | 粗体青 | `D:\data\Projects\scd` |
+| 可按键位 | 黄色字母 + 暗色方括号 | `[c]` `[a]` `[1]` `[q]` |
+| 命令行参数 | 黄色 | `--help`、`--config` |
+| 提示符 | 粗体品红 | `scd>`、`new location:` |
+| 成功 / 警告 / 错误 | 粗体绿 / 黄 / 粗体红 | `added`、`hint:`、`scd:` |
+| 次要信息 | 暗色 | `[q] quit`、`visits=3`、`# config:` |
+| 帮助里的小节标题 | 粗体 + 下划线 | `USAGE:`（不依赖亮色，深浅背景都清楚） |
+
+规则：
+
+* **默认 auto**：只有输出真的连到终端时才上色；一旦重定向/管道（例如 `cd "$(scd proj)"`、`scd list > a.txt`）自动变成纯文本。
+* **机器可读通道永不上色**，无论怎么设置：非包装模式下的 stdout 目录行、`SCD_TARGET_FILE` 里的内容、`config.json`。这是 `cd` 能安全套用的前提，已有专门测试守着。
+* Windows 上程序会自己打开控制台的 VT 处理（`ENABLE_VIRTUAL_TERMINAL_PROCESSING`），所以老 conhost / cmd.exe 里也不会看到 `[1;36m` 这种乱码。
+* 中日韩名字按 **2 列**计宽（`display_width`），转义序列不计宽，所以 `docs` 和 `工作目录` 的路径仍然对齐在同一列。
+
+开关：
+
+```powershell
+$env:SCD_COLOR = 'always'   # 强制上色（演示、截图、写测试）
+$env:SCD_COLOR = 'never'    # 强制关闭
+$env:NO_COLOR  = '1'        # 等价于 never（no-color.org 约定）
+$env:CLICOLOR_FORCE = '1'   # 即使重定向也上色
+```
+
+想先看效果：`cargo build --release` 后运行 `powershell -File tools\preview.ps1`，再打开生成的 `target\preview.html` —— 里面是真实二进制输出转成的深/浅两种背景预览。
+
+### 5.7 环境变量与退出码
 
 | 变量 | 作用 |
 | --- | --- |
@@ -192,6 +242,9 @@ scd --config D:\x\config.json list   # 临时用另一份配置
 | `SCD_TARGET_FILE` | 把选中目录写入该文件（包装函数使用） |
 | `SCD_CD=1` | 声明调用方是 shell 函数，不再打印安装提示 |
 | `SCD_NO_HINT=1` | 永不打印安装提示 |
+| `SCD_COLOR=auto\|always\|never` | 配色开关，默认 auto（只在终端上色） |
+| `NO_COLOR=1` | 等价于 `SCD_COLOR=never` |
+| `CLICOLOR_FORCE=1` | 重定向时也上色 |
 
 退出码：`0` 成功（含退出菜单未跳转）· `1` 目标无法解析/不是目录 · `2` 配置文件读写失败 · `64` 命令行用法错误。
 
@@ -200,7 +253,7 @@ scd --config D:\x\config.json list   # 临时用另一份配置
 ```powershell
 cargo build            # 开发构建
 cargo build --release  # 发布构建（target/release/scd.exe，约 360 KB）
-cargo test             # 126 个测试：89 单元 + 37 端到端
+cargo test             # 160 个测试：110 单元 + 50 端到端
 cargo run -- --help
 ```
 
