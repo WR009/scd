@@ -1,10 +1,14 @@
-# Build every release asset on a tag push and attach it to the GitHub Release.
+# Build the Windows x64 release asset on a tag push and attach it to the GitHub Release.
 #
-#   git tag v0.2.0 && git push origin v0.2.0
+#   git tag v0.2.1 && git push origin v0.2.1
 #
-# This is the professional way to get Linux/macOS binaries: they are built on native
-# runners, so no cross toolchain is needed on anybody's laptop. `workflow_dispatch` lets
-# you dry-run the packaging from the Actions tab without publishing anything.
+# Only Windows x64 is built on purpose: it is the single platform the author installs and
+# verifies by hand, and shipping binaries for platforms nobody tests is worse than not
+# shipping them. The cross-platform build scripts stay in the repository (tools/dist.sh,
+# install.sh) for anyone who wants to build for themselves - see README.en.md.
+#
+# `workflow_dispatch` lets you dry-run the packaging from the Actions tab without
+# publishing anything.
 
 name: release
 
@@ -21,44 +25,16 @@ env:
 
 jobs:
   package:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            label: Windows_x64
-            ext: zip
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            label: Linux_x64
-            ext: tar.gz
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            label: Linux_x64_static
-            ext: tar.gz
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            label: macOS_arm64
-            ext: tar.gz
-    runs-on: ${{ matrix.os }}
-    name: ${{ matrix.target }}
+    runs-on: windows-latest
+    name: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      - name: Install musl-tools
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
 
       - name: Test
         id: test
@@ -83,47 +59,31 @@ jobs:
           exit 1
 
       - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
 
-      # Windows packages with PowerShell (System32 bsdtar writes real .zip files);
-      # everything else uses the bash script. Both read the version from Cargo.toml,
-      # so a tag and a manual workflow_dispatch run produce identically named assets.
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
+      # -ExecutionPolicy Bypass: the runner's policy is not ours to assume, and a blocked
+      # script would be indistinguishable from a packaging bug.
+      - name: Package
         shell: pwsh
-        # -ExecutionPolicy Bypass: the runner's policy is not ours to assume, and a blocked
-        # script would be indistinguishable from a packaging bug.
         run: >
           pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/dist.ps1
-          -Target "${{ matrix.target }}"
-          -Label "${{ matrix.label }}"
-          -Ext "${{ matrix.ext }}"
+          -Target x86_64-pc-windows-msvc
+          -Label Windows_x64
+          -Ext zip
           -SkipBuild
-
-      - name: Package (Linux/macOS)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: >
-          ./tools/dist.sh
-          --target "${{ matrix.target }}"
-          --label "${{ matrix.label }}"
-          --ext "${{ matrix.ext }}"
-          --skip-build
 
       - name: Smoke test the packaged binary
         shell: bash
         run: |
-          bin="releases/${{ matrix.label }}/bin/scd"
-          case "${{ matrix.target }}" in *windows*) bin="$bin.exe" ;; esac
+          bin="releases/Windows_x64/bin/scd.exe"
           "$bin" --version
           "$bin" --help | head -n 3
 
       - uses: actions/upload-artifact@v4
         with:
-          name: scd-${{ matrix.target }}
+          name: scd-x86_64-pc-windows-msvc
           path: |
             releases/*.zip
-            releases/*.tar.gz
             releases/*.sha256
 
       - uses: softprops/action-gh-release@v2
@@ -132,5 +92,4 @@ jobs:
           generate_release_notes: true
           files: |
             releases/*.zip
-            releases/*.tar.gz
             releases/*.sha256

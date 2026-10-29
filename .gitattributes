@@ -1,0 +1,19 @@
+# Normalise to LF inside the repository; the working-tree form is pinned per file type
+# below, because the packaged archive has to stay runnable on the platform it ships to.
+* text=auto
+
+# POSIX shell scripts must never carry a CR: bash/zsh/fish choke on `\r`. The Windows CI
+# runner checks out with core.autocrlf=true, which is exactly how CRLF versions of these
+# files ended up inside the 0.2.0 zip.
+*.sh   text eol=lf
+*.bash text eol=lf
+*.zsh  text eol=lf
+*.fish text eol=lf
+
+# cmd.exe batch files need CRLF - labels and goto mis-parse with bare LF.
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+
+*.exe  binary
+*.zip  binary
+*.gz   binary

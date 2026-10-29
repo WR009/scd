@@ -72,10 +72,19 @@ New-Item -ItemType Directory -Force -Path (Join-Path $stage 'shell') | Out-Null
 Step "staging $folder"
 Copy-Item -LiteralPath $built -Destination (Join-Path $stage "bin\$exeName")
 Copy-Item -Path (Join-Path $repo 'shell\*') -Destination (Join-Path $stage 'shell')
-foreach ($file in 'config.example.json', 'install.ps1', 'install.cmd', 'install.sh', 'README.md', 'CHANGELOG.md', 'LICENSE') {
+foreach ($file in 'config.example.json', 'install.ps1', 'install.cmd', 'install.sh', 'README.md', 'README.en.md', 'CHANGELOG.md', 'LICENSE') {
     $source = Join-Path $repo $file
     if (-not (Test-Path -LiteralPath $source)) { throw "missing $file - a release needs it" }
     Copy-Item -LiteralPath $source -Destination $stage
+}
+
+# A CR inside a POSIX shell script breaks it under bash/zsh/fish, and the Windows runner
+# checks out with core.autocrlf=true. .gitattributes pins eol=lf for these, so finding a CR
+# here means the checkout or the attributes are wrong - fail instead of shipping the bug.
+foreach ($script in Get-ChildItem -LiteralPath $stage -Recurse -File | Where-Object { $_.Extension -in '.sh', '.bash', '.zsh', '.fish' }) {
+    if ([IO.File]::ReadAllBytes($script.FullName) -contains 13) {
+        throw "$($script.Name) contains a CR and would not run under bash - check .gitattributes"
+    }
 }
 
 # --- 3. the unpacked copy the user can run straight away --------------------

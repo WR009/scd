@@ -1,6 +1,6 @@
 [package]
 name = "scd"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "super cd - jump to your favourite directories from the terminal"
 license = "MIT"

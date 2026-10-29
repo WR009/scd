@@ -2,6 +2,34 @@
 
 本文件记录 scd 的版本变化，版本号遵循语义化版本。
 
+## 0.2.1
+
+### 变更（发布范围）
+
+* **只发布 Windows x64**：CI 不再为 Linux（gnu / musl）和 macOS 构建产物。Windows x64 是唯一
+  由作者本人在实机上完整走通安装流程的平台，发布没人验证过的二进制比不发布更糟。
+  `install.sh`、`tools/dist.sh`、`shell/scd.{bash,zsh,fish}` 仍保留在仓库里供自行构建。
+* **README 提供中英两版**：`README.md`（中文）与 `README.en.md`（English）互相链接，
+  两份都在开头写明「目前只有 Windows x64 经过人工验证」。两个文件都随包发布。
+
+### 修复
+
+* **发布包里的 POSIX 脚本不再是 CRLF**：CI 的 Windows runner 以 `core.autocrlf=true` 检出，
+  0.2.0 的 zip 里 `install.sh`、`scd.bash`、`scd.zsh`、`scd.fish` 全都带 CR，在 Git Bash 下
+  会 `$'\r': command not found`。新增 `.gitattributes` 把这些扩展名钉死为 `eol=lf`
+  （`.cmd` / `.bat` 钉为 `eol=crlf`，`*.exe`、压缩包标记为 binary），并且 `tools/dist.ps1`
+  在打包时扫到任何 CR 就直接失败 —— 坏包发不出去。
+* `tools/dist.ps1`：`$isWindows` 改名 `$forWindows`。PowerShell 7（CI 用的 `shell: pwsh`）里
+  `$IsWindows` 是只读自动变量，给它赋值会让脚本在第一行就中止，Windows job 因此只报一个
+  裸的 exit code 1；本地 Windows PowerShell 5.1 没有这个变量，所以一直没暴露。
+
+### 新增
+
+* `install.cmd` 双击安装时**先问装到哪个目录**（回车用默认 `%USERPROFILE%\scd`，也可以输入
+  `D:\applications\scd` 这类路径，带引号的空格路径会被正确处理）；带参数运行则跳过询问，
+  例如 `install.cmd -Dest D:\applications\scd`。
+* `tools/dist.ps1` 打包时带上 `README.en.md`。
+
 ## 0.2.0
 
 ### 变更（行为）
