@@ -47,6 +47,62 @@ function Write-Step([string] $Message) {
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
+# --- 0. refuse to start when the destination is not writable -----------------------
+# D:\applications is a popular choice and it usually inherits Everyone:(RX), so only an
+# administrator can write there. Copying anyway used to fail halfway through, leaving new
+# documents next to the previous exe. Probe first: an existing install is either replaced
+# completely or not touched at all.
+function Test-DirectoryWritable([string] $Dir) {
+    if (-not (Test-Path -LiteralPath $Dir)) {
+        $parent = Split-Path -Parent $Dir
+        if ([string]::IsNullOrEmpty($parent)) { return $false }
+        return Test-DirectoryWritable $parent
+    }
+    $probe = Join-Path $Dir ('.scd-write-probe-' + [Guid]::NewGuid().ToString('n'))
+    try {
+        [IO.File]::WriteAllText($probe, 'x')
+        Remove-Item -LiteralPath $probe -Force
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+$blocked = New-Object 'System.Collections.Generic.List[string]'
+if (-not (Test-DirectoryWritable $Dest)) { $blocked.Add($Dest) }
+foreach ($sub in 'bin', 'shell') {
+    $subDir = Join-Path $Dest $sub
+    if ((Test-Path -LiteralPath $subDir) -and -not (Test-DirectoryWritable $subDir)) { $blocked.Add($subDir) }
+}
+# A directory can be writable while the exe inside it is not: a read-only flag, or a scd
+# that is still running in another terminal, both surface here instead of mid-copy.
+$existingExe = Join-Path (Join-Path $Dest 'bin') $exeName
+if (Test-Path -LiteralPath $existingExe) {
+    try {
+        $stream = [IO.File]::Open($existingExe, 'Open', 'ReadWrite', 'None')
+        $stream.Close()
+    }
+    catch { $blocked.Add($existingExe) }
+}
+if ($blocked.Count -gt 0) {
+    Write-Host ''
+    Write-Host 'scd cannot write to these paths, so NOTHING was installed:' -ForegroundColor Red
+    $blocked | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+    Write-Host ''
+    Write-Host 'An existing installation stays exactly as it was. Pick one of these:' -ForegroundColor Yellow
+    Write-Host '  1) install into a directory you own (the default needs no administrator rights):' -ForegroundColor Yellow
+    Write-Host '       .\install.ps1 -AddToPath -AddToProfile' -ForegroundColor Yellow
+    Write-Host '  2) run this installer as Administrator:' -ForegroundColor Yellow
+    Write-Host '       right-click install.cmd -> Run as administrator' -ForegroundColor Yellow
+    Write-Host '  3) or grant yourself write access once, from an ADMINISTRATOR terminal:' -ForegroundColor Yellow
+    Write-Host "       icacls `"$Dest`" /grant `"$($env:USERNAME):(OI)(CI)M`" /T" -ForegroundColor Yellow
+    Write-Host ''
+    Write-Host 'If scd is open in another terminal, close that terminal first: a running scd.exe' -ForegroundColor Yellow
+    Write-Host 'cannot be overwritten.' -ForegroundColor Yellow
+    Write-Host ''
+    exit 3
+}
 # --- 1. find or build the binary -------------------------------------------------
 # Two shapes are supported, so the same script serves a developer and a downloader:
 #   * the source repository  (has Cargo.toml)      -> build with cargo, then install

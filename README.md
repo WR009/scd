@@ -215,7 +215,9 @@ scd **不会**按使用频率自动重排：
 | Git Bash 里 `source scd.bash` 报 `$'\r': command not found` | 你手上是 0.2.0 的旧包（里面的 sh 脚本被转成了 CRLF）。换 0.2.1 及以后的包即可 |
 | 只想临时用一下，不想装 shell 函数 | `cd "$(scd proj)"`（PowerShell / Git Bash 都可用） |
 | 不想要颜色 | `SCD_COLOR=never` 或 `NO_COLOR=1` |
-| 双击 `install.cmd` 报错或一闪而过 | 用 PowerShell 手动跑 `install.ps1` 看完整报错；确认安装目录有写权限（例如 `D:\applications` 有时需要管理员授权） |
+| 提示 `scd cannot write to these paths`，退出码 3 | 目标目录没有写权限（`D:\applications` 这类目录通常继承 `Everyone:(RX)`，只有管理员能写）。**此时一个文件都没被改动**，三条出路任选：右键 `install.cmd` → 以管理员身份运行；或在**管理员**终端里执行安装器印出来的那条 `icacls` 命令给自己授权；或改装到自己有权限的目录（默认 `%USERPROFILE%\scd`，无需管理员） |
+| 双击 `install.cmd` 报错或一闪而过 | 窗口会停住并显示错误，先读那段话；信息不够时用 PowerShell 手动跑 `install.ps1` 看完整报错 |
+| 提示 exe 被占用、无法覆盖 | 有终端里正开着 `scd`。关掉那些终端再装一次 |
 
 ---
 

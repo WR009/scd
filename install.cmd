@@ -39,6 +39,11 @@ if "%RC%"=="0" (
     echo   Done. Open a NEW terminal and type:  scd
 ) else (
     echo   install.ps1 failed with exit code %RC% - read the message above.
+    if "%RC%"=="3" (
+        echo   Exit code 3 means the target directory is not writable, so nothing was
+        echo   installed and nothing was changed. Either install into a directory you
+        echo   own, or right-click install.cmd, choose "Run as administrator", retry.
+    )
 )
 echo.
 pause

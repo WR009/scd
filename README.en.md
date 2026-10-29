@@ -231,7 +231,9 @@ redirected, so scripts always receive clean text.
 | Git Bash: `source scd.bash` fails with `$'\r': command not found` | You have the old 0.2.0 package, whose shell scripts were checked out with CRLF. Use 0.2.1 or newer |
 | Just want it once, without installing a shell function | `cd "$(scd proj)"` (works in PowerShell and Git Bash) |
 | No colour, please | `SCD_COLOR=never` or `NO_COLOR=1` |
-| `install.cmd` fails or the window closes at once | Run `install.ps1` from PowerShell to see the full error, and check that the destination is writable (`D:\applications` sometimes needs an explicit grant) |
+| `scd cannot write to these paths`, exit code 3 | The destination is not writable (a directory such as `D:\applications` usually inherits `Everyone:(RX)`, so only an administrator can write there). **Nothing was changed.** Pick one: right-click `install.cmd` → Run as administrator; or run the `icacls` command the installer printed, from an ADMIN terminal; or install into a directory you own (the default `%USERPROFILE%\scd` needs no admin rights) |
+| `install.cmd` fails or the window closes at once | The window stays open and shows the error - read that first; for more detail run `install.ps1` from PowerShell |
+| The exe cannot be overwritten, it is in use | `scd` is still open in another terminal. Close those terminals and install again |
 
 ---
 
