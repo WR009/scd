@@ -1,319 +1,305 @@
 # scd — super cd
 
-在终端里快速跳转工作目录的小工具：敲 `scd` 弹出菜单，按数字就跳走；记得路径的话 `scd <路径>` 直接跳，连菜单都不用开。
+终端里的“目录收藏夹”：敲 `scd`，按个数字，立刻跳到常去的目录，不用再打一长串路径。
 
-* 用 Rust 编写，**零第三方依赖**（断网也能 `cargo build`）
-* **0.2.0 起全程配色**：别名绿色、路径青色、按键黄色、错误红色，重定向时自动关闭
-* **0.2.0 起顺序固定**：不再按使用次数排名，新位置追加到末尾，别名可用 `scd rename` 改，顺序可用 `scd mv/up/down` 调
-* 配置就是一个 `config.json`，可以手改
-* Windows / Linux / macOS 都支持；PowerShell、bash、zsh、fish、cmd.exe 都有配套函数
-* 需求原文见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，实现说明见 [`docs/DESIGN.md`](docs/DESIGN.md)
+```console
+PS D:\> scd
 
----
-
-## 0. 从 GitHub Release 下载后怎么用（即开即用）
-
-1. 解压 `scd-<版本>-x86_64-pc-windows-msvc.zip` 到任意位置（里面已经是一个可用的安装目录）。
-2. **双击 `install.cmd`**
-   —— 它会用 `-ExecutionPolicy Bypass` 调 `install.ps1 -AddToPath -AddToProfile`，
-   把程序装到 `%USERPROFILE%\scd`、生成 `config.json`、把 `bin` 加进用户 PATH、把 shell 函数写进 `$PROFILE`。
-   想装到别处：`install.cmd -Dest D:\tools\scd`。不想让它碰环境变量：手动跑
-   `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Dest D:\tools\scd`（脚本会打印手工步骤）。
-3. **开一个新终端**，敲 `scd`。
-
-> 不想安装也能用：解压后直接跑 `bin\scd.exe`，配置会落到 `~\.scd\config.json`；
-> 但要让 `scd` 真的切换目录，仍然需要第 2 步（子进程改不了父 shell 的工作目录，见第 4 节）。
-
-Linux / macOS：解压 `*.tar.gz` 后执行 `./install.sh --dest ~/scd --add-to-rc`（发布包里已带编译好的 `bin/scd`，无需 Rust）。
-
----
-
-## 1. 安装后的结构
-
-`docs/ARCHITECTURE.md` 规定的结构，安装脚本会自动生成（位置由你自己决定）：
-
-```
-<你自己管理的位置>/scd
-├─ bin/
-│  └─ scd(.exe)      # 编译好的程序，这个目录要加入 PATH
-├─ shell/
-│  ├─ scd.ps1        # PowerShell 包装函数（真正执行 cd）
-│  ├─ scd.bash       # bash
-│  ├─ scd.zsh        # zsh
-│  ├─ scd.fish       # fish
-│  └─ scd.cmd        # cmd.exe
-├─ config.json       # 你的配置：位置信息 + 显示多少个位置（首次运行时生成）
-├─ config.example.json  # 模板，发布包里附带的是这一份
-├─ install.cmd       # Windows 双击安装（Release 包里就有）
-├─ install.ps1 / install.sh
-└─ README.md / CHANGELOG.md / LICENSE
-```
-
-## 2. 安装
-
-### Windows（PowerShell）
-
-```powershell
-cd D:\data\Projects\scd
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Dest D:\tools\scd -AddToPath -AddToProfile
-```
-
-| 参数 | 作用 |
-| --- | --- |
-| `-Dest <目录>` | 安装位置，默认 `$HOME\scd` |
-| `-AddToPath` | 把 `<Dest>\bin` 追加到**用户** PATH（等价于你说的“加入系统变量”） |
-| `-AddToProfile` | 往 `$PROFILE` 追加 `. "<Dest>\shell\scd.ps1"`，开新终端即可用 |
-| `-SkipBuild` | 不重新编译，直接用现成的 `target\release\scd.exe` |
-| `-Configuration debug` | 装 debug 版 |
-
-不想让脚本碰环境变量就去掉 `-AddToPath`，脚本最后会打印手工步骤。
-
-### Linux / macOS
-
-```bash
-./install.sh --dest ~/scd --add-to-rc     # 自动往 ~/.bashrc / ~/.zshrc / config.fish 追加 source
-```
-
-### 手工安装（任何平台）
-
-```powershell
-cargo build --release
-mkdir D:\tools\scd\bin, D:\tools\scd\shell
-copy target\release\scd.exe D:\tools\scd\bin\
-copy shell\*               D:\tools\scd\shell\
-```
-
-`config.json` 不用自己建：第一次 `scd add` 会自动生成（内容见第 5 节）。
-
-## 3. 加入系统变量（PATH）
-
-程序自己不修改任何环境变量，这一步由你完成。
-
-**图形界面**：`Win` → 搜索“编辑账户的环境变量” → 选中 `Path` → 新建 → 填入 `D:\tools\scd\bin` → 确定 → **重开终端**。
-
-**命令行（用户级，无需管理员）**：
-
-```powershell
-[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';D:\tools\scd\bin', 'User')
-```
-
-**bash / zsh**：
-
-```bash
-echo 'export PATH="$HOME/scd/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
-```
-
-## 4. 让 `scd` 真的切换目录（重要）
-
-操作系统规定：**子进程无法修改父 shell 的工作目录**。所以 `scd.exe` 负责“算出该去哪个目录”，真正的 `cd` 由一个同名 shell 函数完成。装一次即可：
-
-| Shell | 一次性加载 | 永久生效 |
-| --- | --- | --- |
-| PowerShell | `. D:\tools\scd\shell\scd.ps1` | 把该行写进 `$PROFILE`（或安装时加 `-AddToProfile`） |
-| bash | `source ~/scd/shell/scd.bash` | 写进 `~/.bashrc`（或 `--add-to-rc`） |
-| zsh | `source ~/scd/shell/scd.zsh` | 写进 `~/.zshrc` |
-| fish | `source ~/scd/shell/scd.fish` | 写进 `~/.config/fish/config.fish` |
-| cmd.exe | 无需加载 | 把 `<安装目录>\shell` 放在 PATH 中 **`bin` 之前**（`scd.cmd` 会调用 `scd.exe`） |
-
-如果 PowerShell 报“禁止运行脚本”，先执行一次：
-
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-```
-
-没装函数也能用：`scd` 会把算出的目录打印出来，并提示一条可直接粘贴的 `cd "..."`；也可以用 `cd "$(scd proj)"` 这种通用写法。
-
-## 5. 使用
-
-### 5.1 `scd` —— 打开菜单
-
-```text
     [c] configure scd
     [a] add new location
 
-    [1] scd     D:\data\Projects\scd
-    [2] docs    D:\data\Projects\scd\docs
-    [3] 工作目录  D:\工作目录
+    [1] ZETAmine  D:\data\ZETAmine
+    [2] dl        D:\browserDownload
 
     [q] quit
-    scd>
+
+scd> 2
+PS D:\browserDownload>
 ```
 
-* 按 **数字** 跳到对应位置。**顺序是固定的**：跳转不会重排，编号永远指同一个位置
-* 按 **c** 进入配置：逐项询问需要修改的内容，目前只有一项——**最多显示多少个位置 n**；直接回车保持原值，输入 `quit` 取消。后续新增设置只需在 `src/settings.rs` 里加一项
-* 按 **a** 添加位置，提示语与 `docs/ARCHITECTURE.md` 一致：
+- **不用装环境**：一个 exe，零依赖。不需要 Rust、不需要 Python、不需要管理员权限
+- **编号永远稳定**：顺序和别名完全由你控制，scd 绝不会按使用频率偷偷重排
+- **全 shell 通用**：PowerShell / cmd.exe / bash / zsh / fish
+- **配置就是 JSON**：`config.json` 可以直接用记事本改
 
-```text
-    type the new location, or type "here" to add the current location
-    type "quit" to cancel
+---
 
-    new location:
+# 第一部分 · 用户指南（下载即用）
+
+## 1. 下载
+
+打开 **[Releases 页面](https://github.com/WR009/scd/releases)**，按你的系统下载一个包：
+
+| 系统 | 文件 | 备注 |
+| --- | --- | --- |
+| Windows 10 / 11 (x64) | `scd-0.2.0-x86_64-pc-windows-msvc.zip` | 解压 → 双击 `install.cmd` |
+| Linux (x64) | `scd-0.2.0-x86_64-unknown-linux-gnu.tar.gz` | Ubuntu / Debian / Fedora / Arch |
+| Linux (x64，静态) | `scd-0.2.0-x86_64-unknown-linux-musl.tar.gz` | 任何发行版、任何容器都能跑 |
+| macOS (Apple Silicon) | `scd-0.2.0-aarch64-apple-darwin.tar.gz` | M1 / M2 / M3 / M4 |
+
+每个包旁边都有同名的 `.sha256` 校验文件，需要时可自行核对。当前版本 **0.2.0**，改动见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 2. Windows 安装（三步）
+
+1. **下载**上面的 `.zip`
+2. **解压**到任意位置（右键 → 全部解压）
+3. **双击解压目录里的 `install.cmd`**
+
+看到 `Done. Open a NEW terminal and type: scd` 就成功了。**开一个新终端**，敲 `scd` 即可。
+
+`install.cmd` 会把下面这些事全做完，你不需要手动配任何环境变量：
+
+| 它做了什么 | 具体内容 |
+| --- | --- |
+| 安装程序 | 复制到 `%USERPROFILE%\scd\bin\scd.exe` |
+| 加入 PATH | 把 `...\scd\bin` 和 `...\scd\shell` 写进**用户** PATH（无需管理员） |
+| 让 `scd` 真能切目录 | 往 PowerShell 的 `$PROFILE` 追加一行 `. "...\scd\shell\scd.ps1"` |
+
+> **想装到别的目录**（例如 `D:\applications\scd`）：
+>
+> ```
+> install.cmd -Dest D:\applications\scd
+> ```
+>
+> 或者在 PowerShell 里：
+>
+> ```powershell
+> powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Dest D:\applications\scd -AddToPath -AddToProfile
+> ```
+
+**安装后的目录：**
+
+```
+%USERPROFILE%\scd\
+├── bin\scd.exe          程序本体
+├── shell\               各 shell 的 scd 函数（scd.ps1 / scd.cmd / scd.bash / scd.zsh / scd.fish）
+├── config.json          你保存的目录（可用记事本直接改）
+├── config.example.json  配置示例
+├── README.md  LICENSE  CHANGELOG.md
+└── install.cmd  install.ps1  install.sh
 ```
 
-  输入绝对/相对路径、`~`、带引号的含空格路径、`here`（当前目录）都可以；`quit` 取消
-* 按 **q** 退出；直接粘贴一个路径也能跳
-* 菜单里也可以输入名称片段（如 `proj`）来跳转
+**升级**：解压新版 zip，再双击一次 `install.cmd`。你的 `config.json` 会原样保留。
 
-### 5.2 `scd <目标>` —— 不开菜单直接跳
+## 3. Linux / macOS 安装
 
-目标按以下顺序解析：
-
-1. **目录路径**：`scd D:\data\Projects\scd`、`scd ~/code`、`scd ..\docs`、`scd .`、`scd "D:\my dir"`
-2. **菜单编号**：`scd 3`
-3. **已保存的名称**：`scd proj`（精确 → 前缀 → 包含 → 目录名 → 模糊匹配；有歧义会列出候选）
-
-### 5.3 其它命令
-
-```powershell
-scd add .            # 保存当前目录（等价于菜单里的 a + here）
-scd add "D:\my dir"  # 保存指定目录
-scd rm proj          # 删除一个已保存位置（也可用编号或路径）
-scd rename 2 项目     # 改别名（支持空格：scd rename 2 my project）
-scd mv proj 1        # 把某个位置放到第 1 位
-scd up proj          # 上移一位（scd down proj 下移一位，到顶/到底会自动停住）
-scd list             # 列出全部位置，包括被 n 限制隐藏的
-scd config           # 显示当前使用的 config.json 路径
-scd -h | scd --help  # 用户指南
-scd -V | scd --version
-scd --config D:\x\config.json list   # 临时用另一份配置
+```bash
+tar -xzf scd-0.2.0-x86_64-unknown-linux-gnu.tar.gz
+cd scd-0.2.0-x86_64-unknown-linux-gnu
+bash install.sh --add-to-rc                      # 默认装到 ~/scd
+bash install.sh --dest ~/.local/scd --add-to-rc  # 或指定目录
 ```
 
-### 5.4 顺序与别名都由你控制
+`--add-to-rc` 会往 `~/.bashrc` / `~/.zshrc` / `~/.config/fish/config.fish` 追加两行（PATH + source）。**开一个新终端**即可使用。
 
-* **不按使用次数排名**：`scd` 从不自动重排。跳转只会累加 `visits` / 更新 `last_used_at`
-  这两个统计值（`scd list` 里能看到），**不影响顺序**。
-* **新增位置追加到末尾**，所以你已经记住的编号不会因为加了一个新目录而错位。
-  如果新位置落在 `max_display` 之外，`scd add` 会直接提示你怎么把它提上来。
-* **想自己排**：`scd mv <目标> <位置>`、`scd up/down <目标>`，或者直接编辑 `config.json`
-  —— 数组顺序就是菜单顺序，改完存盘立即生效。
-* **想改别名**：`scd rename <目标> <新别名>`（目标可以是编号、旧别名或路径；新别名可含空格）。
-  重名会被拒绝并告诉你是谁占了这个名字，也可以直接改 `config.json` 里的 `name`。
-* 每次改动后 `scd` 会把新的顺序打印出来，不用再敲一次 `scd list` 确认。
+## 4. 日常使用
 
-### 5.5 `config.json`
+### 打开菜单：`scd`
+
+| 按键 | 作用 |
+| --- | --- |
+| `1` `2` `3` … | 跳到对应目录 |
+| `a` | 添加新位置（输入路径，或输入 `here` 表示当前目录，`quit` 取消） |
+| `c` | 设置（菜单最多列几条等） |
+| `q` | 退出 |
+| 其它任何输入 | 当成目标解析，所以也可以直接粘贴一条路径 |
+
+### 不开菜单直接跳：`scd <目标>`
+
+目标按这个顺序尝试：
+
+1. **目录路径** —— `scd D:\code`、`scd ~/code`、`scd ..\docs`、`scd "C:\my dir"`、`scd .`
+2. **菜单编号** —— `scd 3`（`scd list` 里看到的那个号）
+3. **位置名称** —— `scd proj`（支持精确 / 前缀 / 子串 / 路径 / 模糊匹配）
+
+### 管理保存的位置
+
+| 命令 | 作用 |
+| --- | --- |
+| `scd add .` | 把当前目录加入配置（**追加到末尾**，老编号不变） |
+| `scd add "D:\my dir"` | 加入指定目录 |
+| `scd rm <目标>` | 删除 |
+| `scd rename <目标> <新别名>` | 改别名，可以带空格和中文 |
+| `scd mv <目标> <n>` | 把它放到第 n 位 |
+| `scd up <目标>` / `scd down <目标>` | 上移 / 下移一位 |
+| `scd list` | 列出全部（含访问次数等统计） |
+| `scd config` | 显示当前用的是哪个 `config.json` |
+| `scd --help` | 完整使用说明 |
+
+## 5. 顺序和别名都由你控制
+
+scd **不会**按使用频率自动重排：
+
+- 新位置一律**追加到末尾**，你已经记住的编号不会失效
+- 想调顺序用 `scd mv / up / down`，或者直接用记事本改 `config.json` 里 `locations` 数组的顺序（**数组顺序 = 菜单顺序**）
+- `visits`、`last_used_at` 只是统计数字，`scd list` 会显示，但**不参与排序**
+
+## 6. 配置文件
+
+默认在 `<安装目录>\config.json`（Windows）或 `~/scd/config.json`（Linux / macOS），可以手改。scd 每次写入都是原子的（先写临时文件再替换），不会写坏文件。
 
 ```json
 {
   "version": 1,
-  "max_display": 9,
+  "max_display": 5,
   "locations": [
     {
-      "name": "scd",
-      "path": "D:\\data\\Projects\\scd",
-      "visits": 3,
-      "added_at": "2026-10-27T11:17:04Z",
-      "last_used_at": "2026-10-27T11:17:04Z"
+      "name": "ZETAmine",
+      "path": "D:\\data\\ZETAmine",
+      "visits": 6,
+      "added_at": "2026-10-27T13:40:19Z",
+      "last_used_at": "2026-10-29T02:50:03Z"
     }
   ]
 }
 ```
 
-| 字段 | 含义 |
+`max_display` 就是菜单里 `[c] configure scd` 能改的那一项。
+
+> 查找顺序：`--config` → `$SCD_CONFIG` → `$SCD_HOME\config.json` → exe 位于 `bin\` 时的上一级目录 → exe 同级目录 → `~/.scd/config.json`
+
+## 7. 配色
+
+真实终端里自动上色：别名绿色、路径青色、按键提示黄色、错误红色、次要信息灰色；管道和重定向时自动关闭，脚本里拿到的永远是干净文本。
+
+| 想做什么 | 怎么做 |
 | --- | --- |
-| `max_display` | 菜单最多显示多少个位置（`c` 修改的就是它，范围 1–99） |
-| `locations[].path` | 目录（也可只写一个字符串，例如 `"locations": ["D:\\code"]`） |
-| `locations[].name` | 菜单里的名字，默认取文件夹名，可手改（重名会自动加后缀区分） |
-| `visits` / `last_used_at` | 自动记录的访问次数与时间（**只是统计，不参与排序**） |
-| `added_at` | 添加时间 |
+| 强制开 / 关 | `SCD_COLOR=always` / `SCD_COLOR=never` |
+| 遵循通用约定 | 设置 `NO_COLOR=1` |
 
-**数组顺序就是菜单顺序**，手改后保存即可生效；文件损坏时 scd 会报错并**拒绝覆盖**，方便你先备份。
+## 8. 卸载
 
-查找顺序：`--config` → `SCD_CONFIG` → `SCD_HOME/config.json` → `<exe目录>/../config.json`（即 `bin/` 的上一级，符合规定结构）→ `<exe目录>/config.json` → `~/.scd/config.json`。
+1. 删掉安装目录（默认 `%USERPROFILE%\scd`）
+2. 从用户 PATH 里删掉 `...\scd\bin` 和 `...\scd\shell` 两条
+3. 从 `$PROFILE`（或 `~/.bashrc`）里删掉那行 `. "...\shell\scd.ps1"` / `source "..."`
 
-### 5.6 配色（0.2.0）
+## 9. 排错
 
-在真实终端里 `scd` 的所有输出都会上色，角色固定：
+| 现象 | 原因与解决 |
+| --- | --- |
+| `'scd' 不是内部或外部命令` / `command not found` | PATH 是安装时才改的，**必须开新终端**；或检查用户 PATH 里有没有 `...\scd\bin` |
+| 显示了目录但没跳过去，还提示 `scd cannot change this shell's directory by itself` | shell 函数没加载。PowerShell：`$PROFILE` 里要有 `. "<安装目录>\shell\scd.ps1"`（`install.cmd` 已自动写）；bash/zsh：rc 文件里要有对应的 `source` 行 |
+| PowerShell 报“因为在此系统上禁止运行脚本” | 执行策略是 Restricted，`$PROFILE` 根本不会运行。执行一次即可（只影响当前用户，不需要管理员）：`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
+| cmd.exe 里能显示目录但不切过去 | `shell` 目录必须排在 `bin` **前面**（cmd.exe 在同目录里优先选 `.exe`）。用 `install.cmd` 安装会自动排好；手动加请注意顺序 |
+| 只想临时用一下，不想装 shell 函数 | `cd "$(scd proj)"`（PowerShell / bash 都可用） |
+| 不想要颜色 | `SCD_COLOR=never` 或 `NO_COLOR=1` |
+| 双击 `install.cmd` 失败 | 用 PowerShell 手动跑 `install.ps1` 看完整报错；或确认安装目录有写权限 |
 
-| 元素 | 颜色 | 例子 |
-| --- | --- | --- |
-| **位置别名 / 文件夹名** | 粗体绿 | `scd`、`工作目录` |
-| **路径** | 粗体青 | `D:\data\Projects\scd` |
-| 可按键位 | 黄色字母 + 暗色方括号 | `[c]` `[a]` `[1]` `[q]` |
-| 命令行参数 | 黄色 | `--help`、`--config` |
-| 提示符 | 粗体品红 | `scd>`、`new location:` |
-| 成功 / 警告 / 错误 | 粗体绿 / 黄 / 粗体红 | `added`、`hint:`、`scd:` |
-| 次要信息 | 暗色 | `[q] quit`、`visits=3`、`# config:` |
-| 帮助里的小节标题 | 粗体 + 下划线 | `USAGE:`（不依赖亮色，深浅背景都清楚） |
+---
 
-规则：
+# 第二部分 · 从源码构建（开发者）
 
-* **默认 auto**：只有输出真的连到终端时才上色；一旦重定向/管道（例如 `cd "$(scd proj)"`、`scd list > a.txt`）自动变成纯文本。
-* **机器可读通道永不上色**，无论怎么设置：非包装模式下的 stdout 目录行、`SCD_TARGET_FILE` 里的内容、`config.json`。这是 `cd` 能安全套用的前提，已有专门测试守着。
-* Windows 上程序会自己打开控制台的 VT 处理（`ENABLE_VIRTUAL_TERMINAL_PROCESSING`），所以老 conhost / cmd.exe 里也不会看到 `[1;36m` 这种乱码。
-* 中日韩名字按 **2 列**计宽（`display_width`），转义序列不计宽，所以 `docs` 和 `工作目录` 的路径仍然对齐在同一列。
+> 只是用一下的话不需要看这部分：Release 里已经有编译好的二进制，装 Rust 只为了改代码。
 
-开关：
+## 1. 环境
 
-```powershell
-$env:SCD_COLOR = 'always'   # 强制上色（演示、截图、写测试）
-$env:SCD_COLOR = 'never'    # 强制关闭
-$env:NO_COLOR  = '1'        # 等价于 never（no-color.org 约定）
-$env:CLICOLOR_FORCE = '1'   # 即使重定向也上色
+- Rust **stable**（`edition 2024`，即 1.85 或更新），用 [rustup](https://rustup.rs) 安装
+- **零第三方依赖**：`Cargo.toml` 的 `[dependencies]` 是空的。JSON 解析、UTC 时间、ANSI 配色全部手写，因此从干净检出**离线也能构建**，CI 里的 `--locked` 不会去下载任何东西
+
+## 2. 构建与测试
+
+```bash
+cargo build --release   # -> target/release/scd(.exe)
+cargo test              # 单元测试 + tests/cli.rs 里的端到端测试
+cargo clippy --all-targets   # 可选
 ```
 
-想先看效果：`cargo build --release` 后运行 `powershell -File tools\preview.ps1`，再打开生成的 `target\preview.html` —— 里面是真实二进制输出转成的深/浅两种背景预览。
+## 3. 从仓库安装
 
-### 5.7 环境变量与退出码
+仓库里的 `install.ps1` / `install.sh` 会自己调 cargo 构建再安装。它们和 Release 包里是**同一个脚本**：脚本会判断自己在源码仓库里（有 `Cargo.toml`，需要构建）还是在解压出来的包里（有 `bin/scd`，直接装）。
+
+```powershell
+.\install.ps1 -Dest D:\applications\scd -AddToPath -AddToProfile
+```
+
+```bash
+bash install.sh --dest ~/.local/scd --add-to-rc
+```
+
+## 4. 代码结构
+
+```
+src/
+├── main.rs      入口
+├── cli.rs       参数解析与子命令分发
+├── lib.rs       库入口（供测试使用）
+├── config.rs    config.json 读写：原子替换 + 结构校验
+├── json.rs      手写的极简 JSON 解析 / 序列化
+├── time.rs      手写的 UTC 时间（无 chrono）
+├── color.rs     ANSI 配色、tty 探测、Windows VT 启用、配色策略
+├── paths.rs     配置文件查找顺序、路径规范化
+├── menu.rs      交互式菜单
+├── jump.rs      目标解析：路径 / 编号 / 名称（五级匹配）
+├── add.rs       add / rm / mv / up / down / rename
+├── emit.rs      输出通道：人类可读 vs 机器可读（后者永不上色）
+├── settings.rs  `[c] configure` 里的设置项
+└── ui.rs        终端渲染
+shell/           五种 shell 的 scd 函数 / 包装
+tools/dist.ps1   打包脚本（Windows）
+tools/dist.sh    打包脚本（Linux / macOS）
+tools/preview.ps1  生成配色预览 target/preview.html
+tests/cli.rs     端到端测试
+docs/            ARCHITECTURE.md（规格）、DESIGN.md（设计决策）
+```
+
+## 5. 打包与发布
+
+发布**不需要**在本地交叉编译：`.github/workflows/release.yml` 会在原生 runner 上把四个平台的包全部构建好并挂到 GitHub Release（产物就是本文开头那张表）。
+
+```bash
+# 1) 改 Cargo.toml 里的 version，写 CHANGELOG.md
+# 2) 提交并打标签
+git tag -a v0.3.0 -m "scd 0.3.0"
+git push origin master --tags
+```
+
+标签一推上去，CI 自动执行：`cargo test --locked` → `cargo build --release --locked` → 调 `tools/dist.ps1|dist.sh` 打包 → 冒烟测试包里的二进制 → 上传到 Release。矩阵是 `fail-fast: false`，单个平台失败不影响其它平台出包。
+
+本地只想出一个包（不打标签、不发布）：
+
+```powershell
+.\tools\dist.ps1 -Target x86_64-pc-windows-msvc -Label Windows_x64 -Ext zip
+```
+
+```bash
+./tools/dist.sh --target x86_64-unknown-linux-gnu --label Linux_x64 --ext tar.gz
+```
+
+产物落在 `releases/`（已 gitignore，永不入库）：`scd-<版本>-<target>.<ext>` + `.sha256`，外加一个解开好的 `releases/<Label>/`，方便直接测试安装流程。
+
+## 6. 完整参考
+
+**环境变量**
 
 | 变量 | 作用 |
 | --- | --- |
-| `SCD_CONFIG` | 指定配置文件 |
-| `SCD_HOME` | 指定安装目录（含 `bin/` 与 `config.json`） |
-| `SCD_BIN` | 让 shell 函数调用指定的可执行文件 |
-| `SCD_TARGET_FILE` | 把选中目录写入该文件（包装函数使用） |
-| `SCD_CD=1` | 声明调用方是 shell 函数，不再打印安装提示 |
+| `SCD_CONFIG=<file>` | 指定配置文件 |
+| `SCD_HOME=<dir>` | 指定含 `bin/` 和 `config.json` 的安装目录 |
+| `SCD_BIN=<exe>` | shell 函数应当调用的二进制 |
+| `SCD_TARGET_FILE=<file>` | 把选中的目录写到该文件（shell 包装就是这样拿到结果的） |
+| `SCD_CD=1` | 调用方是 shell 函数：不再打印安装提示 |
 | `SCD_NO_HINT=1` | 永不打印安装提示 |
-| `SCD_COLOR=auto\|always\|never` | 配色开关，默认 auto（只在终端上色） |
+| `SCD_COLOR=auto\|always\|never` | 配色策略，默认 `auto`（只在真终端上色） |
 | `NO_COLOR=1` | 等价于 `SCD_COLOR=never` |
-| `CLICOLOR_FORCE=1` | 重定向时也上色 |
+| `CLICOLOR_FORCE=1` | 即使输出被重定向也上色 |
 
-退出码：`0` 成功（含退出菜单未跳转）· `1` 目标无法解析/不是目录 · `2` 配置文件读写失败 · `64` 命令行用法错误。
+**退出码**
 
-## 6. 开发
-
-```powershell
-cargo build            # 开发构建
-cargo build --release  # 发布构建（target/release/scd.exe，约 360 KB）
-cargo test             # 160 个测试：110 单元 + 50 端到端
-cargo run -- --help
-```
-
-模块划分、设计取舍与需求对照见 [`docs/DESIGN.md`](docs/DESIGN.md)。
-
-### 打包与发布
-
-本机打包（产物落在 `releases/`，已被 `.gitignore` 忽略）：
-
-```powershell
-.\tools\dist.ps1                                   # Windows：releases\Windows_x64\ + zip + .sha256
-.\tools\dist.ps1 -SkipBuild                        # 复用已有构建
-```
-
-```bash
-./tools/dist.sh --target x86_64-unknown-linux-gnu   --label Linux_x64        # 在 Linux 上打包
-./tools/dist.sh --target x86_64-unknown-linux-musl  --label Linux_x64_static # 静态版，任何发行版都能跑
-./tools/dist.sh --target aarch64-apple-darwin       --label macOS_arm64
-```
-
-正式发版走 CI，不要在自己电脑上凑其它平台的产物：
-
-```bash
-# 1) 改 Cargo.toml 的 version + 写 CHANGELOG.md
-# 2) 提交并打标签
-git tag v0.2.0 && git push origin v0.2.0
-```
-
-`.github/workflows/release.yml` 会在 windows / ubuntu / macos runner 上跑测试、编译、
-用同一个 `tools/dist.sh` 打包，并把 `zip` / `tar.gz` / `.sha256` 自动挂到 GitHub Release。
-上传件命名遵循 Rust target triple，例如 `scd-0.2.0-x86_64-pc-windows-msvc.zip`。
-
-## 7. 排错
-
-| 现象 | 原因 / 处理 |
+| 码 | 含义 |
 | --- | --- |
-| `scd` 打印了路径但目录没变 | 没加载 shell 函数，见第 4 节；或临时用 `cd "$(scd proj)"` |
-| 提示 `scd: cannot find scd.exe` | `bin` 不在 PATH，或设置 `$env:SCD_BIN` 指向 exe |
-| `scd` 被识别成 cmdlet/别名 | PowerShell 里函数未加载；`Get-Command scd` 检查来源 |
-| 中文目录显示乱码 | 终端字体/代码页问题；建议 Windows Terminal + `chcp 65001`。`config.json` 始终是 UTF-8 |
-| 修改 PATH 后不生效 | 需要**重开**终端窗口 |
-| `scd: cannot parse ...config.json` | 手改时语法错了，按提示的行/列修正；scd 不会覆盖它 |
+| 0 | 成功（在菜单里直接退出也算成功） |
+| 1 | 目标解析失败，或它不是一个目录 |
+| 2 | `config.json` 读 / 解析 / 写失败 |
+| 64 | 命令行本身写错了 |
+
+**为什么必须有 shell 函数？** 任何子进程都无法修改父 shell 的工作目录。所以 `scd` 负责解析出目标目录并回传，真正的 `cd` 由 `shell/` 里的同名函数完成。装上之后，`scd` 用起来就和 `cd` 一模一样。
+
+## 7. 更多文档
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— 功能规格
+- [docs/DESIGN.md](docs/DESIGN.md) —— 设计决策（为什么零依赖、为什么不做使用频率重排、配色策略等）
+- [CHANGELOG.md](CHANGELOG.md) —— 版本历史
+
+## License
+
+MIT © 2026 River

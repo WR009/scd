@@ -5,8 +5,8 @@
 #   <dest>/shell/*        shell functions that perform the real `cd`
 #   <dest>/config.json    your locations and settings (kept across upgrades)
 #
-# scd never modifies environment variables itself; use --add-to-rc if you want this
-# script to append the `source` line to your shell startup file, or do it by hand.
+# scd never modifies environment variables itself; --add-to-rc makes this script append
+# the PATH export and the `source` line to your shell startup file, or do it by hand.
 
 set -euo pipefail
 
@@ -44,7 +44,7 @@ options:
   --dest <dir>     install directory (default: $HOME/scd)
   --debug          build the debug profile instead of release
   --skip-build     reuse an existing target/<profile>/scd
-  --add-to-rc      append the `source` line to ~/.bashrc, ~/.zshrc or config.fish
+  --add-to-rc      add <dest>/bin to PATH and load the scd function from your rc file
   -h, --help       show this help
 USAGE
 }
@@ -135,6 +135,10 @@ if [ "$ADD_TO_RC" -eq 1 ]; then
     else
         {
             printf '\n# scd - super cd (added by install.sh)\n'
+            case ":$PATH:" in
+                *":$DEST/bin:"*) ;;
+                *) printf 'export PATH="%s/bin:$PATH"\n' "$DEST" ;;
+            esac
             printf 'source "%s"\n' "$WRAPPER"
         } >>"$RC_FILE"
         say "added the scd function to $RC_FILE"
@@ -144,17 +148,20 @@ fi
 printf '\n'
 good "scd is installed in $DEST"
 printf '\n'
-printf '%s1) put the program on PATH:%s\n' "$C_YELLOW" "$C_OFF"
-note "     export PATH=\"$DEST/bin:\$PATH\""
-note "   (add that line to $RC_FILE to keep it)"
-printf '\n'
-if [ "$ADD_TO_RC" -eq 0 ]; then
+if [ "$ADD_TO_RC" -eq 1 ]; then
+    printf '%s1) PATH and the scd function were added to %s:%s\n' "$C_YELLOW" "$RC_FILE" "$C_OFF"
+    note '     open a NEW terminal, then type:  scd'
+else
+    printf '%s1) put the program on PATH:%s\n' "$C_YELLOW" "$C_OFF"
+    note "     export PATH=\"$DEST/bin:\$PATH\""
+    note "   (add that line to $RC_FILE to keep it)"
+    printf '\n'
     printf '%s2) load the shell function so "scd" really changes directory:%s\n' "$C_YELLOW" "$C_OFF"
     note "     source \"$WRAPPER\""
-    note "   or re-run with --add-to-rc to append it to $RC_FILE"
-    printf '\n'
+    note '   or re-run with --add-to-rc and both steps are done for you'
 fi
-printf '%s3) try it:%s\n' "$C_YELLOW" "$C_OFF"
+printf '\n'
+printf '%stry it:%s\n' "$C_YELLOW" "$C_OFF"
 note '     scd            # the [c]/[a]/[1..n] menu'
 note '     scd add .      # save the current directory'
 note '     scd <name>     # jump straight there'

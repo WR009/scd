@@ -36,6 +36,14 @@
   `bin/ + shell/ + config.example.json` 结构，解压即用。
 * `install.cmd`：Windows 双击安装（自动 `-ExecutionPolicy Bypass`，并加 PATH 与 `$PROFILE`）。
 * `install.ps1` / `install.sh` 自动识别"源码仓库"与"解压出来的发布包"：后者不需要装 Rust。
+* `install.ps1 -AddToPath` 现在会把 `<安装目录>\shell` 一起加进用户 PATH，并排在 `bin` **之前**：
+  cmd.exe 没有函数机制，只有 `shell\scd.cmd` 排前面才能真正切换目录。
+* `install.sh --add-to-rc` 除了 `source` 行，还会写入 `export PATH="<dest>/bin:$PATH"`，
+  一条命令装完，新开终端直接可用。
+* `install.ps1` 检测到 ExecutionPolicy 为 Restricted 时会明确提示：`$PROFILE` 不会运行、
+  函数不会加载，需要执行一次 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`。
+* README 重写为两部分：前半段纯用户视角（下载 release 包 → 双击安装 → 日常使用 → 排错），
+  后半段才是从源码构建与发布流程。
 * `.github/workflows/release.yml`：推 `v*.*.*` 标签时在 windows / ubuntu(gnu+musl) / macos
   原生 runner 上测试、编译、打包并自动挂到 GitHub Release。
 * 新增 `LICENSE`（MIT，此前 Cargo.toml 已声明但缺文件）、`config.example.json`，

@@ -135,17 +135,34 @@ $installedExe = Join-Path $binDir $exeName
 if ($AddToPath) {
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     if ([string]::IsNullOrEmpty($userPath)) { $userPath = '' }
-    $entries = @($userPath -split ';' | Where-Object { $_ -ne '' })
-    if ($entries -contains $binDir) {
+    $entries = New-Object 'System.Collections.Generic.List[string]'
+    $entries.AddRange([string[]]@($userPath -split ';' | Where-Object { $_ -ne '' }))
+
+    if ($entries.Contains($binDir)) {
         Write-Step "$binDir is already on the user PATH"
     }
     else {
         # Note: this stores the expanded value; %VAR% indirections in the user PATH
         # are resolved once, which is the normal behaviour of the PATH editor too.
-        [Environment]::SetEnvironmentVariable('Path', (($entries + $binDir) -join ';'), 'User')
+        $entries.Add($binDir)
         Write-Step "added $binDir to the user PATH (open a new terminal to pick it up)"
     }
-    if (@($env:Path -split ';') -notcontains $binDir) { $env:Path = "$env:Path;$binDir" }
+
+    # cmd.exe cannot define a function, so there "scd" is shell\scd.cmd - and because
+    # cmd.exe prefers .exe over .cmd inside one directory, shell\ must sit AHEAD of bin\.
+    if ($entries.Contains($shellDir)) {
+        Write-Step "$shellDir is already on the user PATH"
+    }
+    else {
+        $entries.Insert($entries.IndexOf($binDir), $shellDir)
+        Write-Step "added $shellDir to the user PATH (ahead of bin, so cmd.exe can cd too)"
+    }
+
+    $newPath = [string]::Join(';', $entries.ToArray())
+    if ($newPath -ne $userPath) { [Environment]::SetEnvironmentVariable('Path', $newPath, 'User') }
+    foreach ($dir in @($shellDir, $binDir)) {
+        if (@($env:Path -split ';') -notcontains $dir) { $env:Path = "$env:Path;$dir" }
+    }
 }
 
 # --- 5. optional: $PROFILE -----------------------------------------------------
@@ -173,6 +190,7 @@ Write-Host ''
 if (-not $AddToPath) {
     Write-Host '1) put the program on PATH (系统变量 -> Path -> 新建):' -ForegroundColor Yellow
     Write-Host "     $binDir"
+    Write-Host "     $shellDir   (cmd.exe needs this one too, ahead of bin)"
     Write-Host '   or let this script do it next time: .\install.ps1 -AddToPath'
     Write-Host ''
 }
@@ -181,6 +199,16 @@ if (-not $AddToProfile) {
     Write-Host "     Add-Content `$PROFILE `'. `"$wrapper`"`'   ; then restart the shell"
     Write-Host '   or let this script do it next time: .\install.ps1 -AddToProfile'
     Write-Host ''
+}
+
+# A Restricted execution policy stops PowerShell from running $PROFILE at all, so the scd
+# function would never load and "scd" would fall back to the .exe, which can only print
+# where to go. Say so here rather than letting the user wonder why cd did not happen.
+if ($AddToProfile -and (Get-ExecutionPolicy) -in @('Restricted', 'Undefined')) {
+    Write-Host ''
+    Write-Host 'NOTE: your PowerShell execution policy is Restricted, so $PROFILE will not run' -ForegroundColor Yellow
+    Write-Host '      and the scd function will not load. Fix it once (current user, no admin):' -ForegroundColor Yellow
+    Write-Host '        Set-ExecutionPolicy -Scope CurrentUser RemoteSigned' -ForegroundColor Yellow
 }
 Write-Host '3) try it:' -ForegroundColor Yellow
 Write-Host '     scd            # the [c]/[a]/[1..n] menu'
