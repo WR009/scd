@@ -176,7 +176,49 @@ Windows 上第一次决定要上色时会调用 `SetConsoleMode(..., ENABLE_VIRT
 `scd mv/up/down/rename` 的 `<目标>` 复用 `jump::resolve`，所以编号、别名、路径三种写法都能指定；
 执行成功后把新的完整顺序打印出来，用户不必再 `scd list` 确认。
 
-## 9. 已知取舍
+## 9. 发布工程（0.2.0 起）
+
+**产物形态**：每个平台一个压缩包 + 一个 `.sha256`，命名用 Rust target triple，不用自造的平台名：
+
+```
+releases/scd-0.2.0-x86_64-pc-windows-msvc.zip          (+ .sha256)
+releases/scd-0.2.0-x86_64-unknown-linux-gnu.tar.gz     (+ .sha256)
+releases/scd-0.2.0-x86_64-unknown-linux-musl.tar.gz    (+ .sha256)
+releases/scd-0.2.0-aarch64-apple-darwin.tar.gz         (+ .sha256)
+```
+
+`releases/<Label>/`（如 `Windows_x64/`）是同一个包的**解压态**，方便本地管理和直接取用；
+真正上传到 GitHub Release 的只能是文件，所以必须有压缩包那一份。`releases/` 整个目录被
+`.gitignore` 忽略 —— 二进制不进版本库，只挂在 tag 对应的 Release 上。
+
+**包内布局**（就是 `docs/ARCHITECTURE.md` 规定的结构，解压即用）：
+
+```
+scd-0.2.0-<triple>/
+├─ bin/scd(.exe)          # exe 在 bin/ 里，所以程序会自动用同级的 ../config.json
+├─ shell/                 # scd.ps1 / scd.cmd / scd.bash / scd.zsh / scd.fish
+├─ config.example.json    # 模板；真正的 config.json 由首次 scd add 生成
+├─ install.cmd            # Windows 双击安装（内部用 -ExecutionPolicy Bypass 调 install.ps1）
+├─ install.ps1 / install.sh
+└─ README.md / CHANGELOG.md / LICENSE
+```
+
+三条刻意的设计：
+
+1. **不打包 `config.json`**。它是用户状态，随包分发会让升级覆盖用户已存的位置；
+   改为附 `config.example.json`，安装脚本在目标目录缺 `config.json` 时生成一份空的。
+2. **`install.ps1` / `install.sh` 自动识别运行环境**：目录里有 `Cargo.toml` 就按源码模式
+   `cargo build`；只有 `bin/scd` 就按发布包模式直接安装（下载者不需要装 Rust）。
+   这是"即开即用"的关键，否则解压后跑安装脚本会因为找不到 cargo 而失败。
+3. **Linux/macOS 产物只能由对应平台的 runner 生成**。Windows 上既没有 Linux 链接器
+   （gcc / musl-gcc），也没有 `x86_64-unknown-linux-*` 的 std，硬凑交叉编译不可靠；
+   `.github/workflows/release.yml` 用原生 runner 矩阵解决，本地 `tools/dist.sh` 供 Linux/macOS 手动打包。
+
+打包逻辑集中在 `tools/dist.ps1`（Windows）与 `tools/dist.sh`（其它平台，CI 也调它），
+两者产出完全一致的布局；CI 额外做 `cargo test --locked` 和对打包后二进制的 smoke test
+（`--version` / `--help`），避免"上传了一个跑不起来的包"。
+
+## 10. 已知取舍
 
 * **顺序不会自己变好**：常用目录不会自动上浮，需要用户 `scd mv/up` 或手改 `config.json`
   （这是 0.2.0 的有意取舍：编号稳定 > 自动优化）。

@@ -47,26 +47,48 @@ function Write-Step([string] $Message) {
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
-# --- 1. build ------------------------------------------------------------------
+# --- 1. find or build the binary -------------------------------------------------
+# Two shapes are supported, so the same script serves a developer and a downloader:
+#   * the source repository  (has Cargo.toml)      -> build with cargo, then install
+#   * an extracted release   (has bin\scd.exe)     -> nothing to build, install as is
+$isRepo = Test-Path -LiteralPath (Join-Path $repo 'Cargo.toml')
+$prebuilt = Join-Path $repo "bin\$exeName"
+$hasPrebuilt = Test-Path -LiteralPath $prebuilt
+if (-not $isRepo -and -not $hasPrebuilt) {
+    throw "neither Cargo.toml nor bin\$exeName found in $repo - run this from the repository or from an extracted release archive"
+}
+
 $built = Join-Path $repo "target\$Configuration\$exeName"
-if ($SkipBuild) {
+if ($hasPrebuilt -and -not $isRepo) {
+    Write-Step "release archive detected: using $prebuilt (no Rust toolchain needed)"
+    $built = $prebuilt
+}
+elseif ($SkipBuild) {
     if (-not (Test-Path -LiteralPath $built)) {
-        throw "no build found at $built - run without -SkipBuild"
+        if ($hasPrebuilt) { $built = $prebuilt } else { throw "no build found at $built - run without -SkipBuild" }
     }
     Write-Step "using the existing build $built"
 }
 else {
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-        throw 'cargo is not on PATH. Install Rust (https://rustup.rs) or use -SkipBuild.'
+        if ($hasPrebuilt) {
+            Write-Step 'cargo is not on PATH - falling back to the prebuilt binary'
+            $built = $prebuilt
+        }
+        else {
+            throw 'cargo is not on PATH. Install Rust (https://rustup.rs) or use -SkipBuild.'
+        }
     }
-    Write-Step "cargo build --$Configuration (no dependencies, works offline)"
-    Push-Location $repo
-    try {
-        & cargo build "--$Configuration"
-        if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
-    }
-    finally {
-        Pop-Location
+    else {
+        Write-Step "cargo build --$Configuration (no dependencies, works offline)"
+        Push-Location $repo
+        try {
+            & cargo build "--$Configuration"
+            if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
+        }
+        finally {
+            Pop-Location
+        }
     }
 }
 
@@ -78,6 +100,16 @@ New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 New-Item -ItemType Directory -Force -Path $shellDir | Out-Null
 Copy-Item -LiteralPath $built -Destination (Join-Path $binDir $exeName) -Force
 Copy-Item -Path (Join-Path $repo 'shell\*') -Destination $shellDir -Force
+
+# Docs and the installer itself, so <Dest> is self-contained (and re-installable).
+foreach ($extra in 'install.ps1', 'install.cmd', 'install.sh', 'README.md', 'CHANGELOG.md', 'LICENSE', 'config.example.json') {
+    $source = Join-Path $repo $extra
+    $target = Join-Path $Dest $extra
+    if (-not (Test-Path -LiteralPath $source)) { continue }
+    # `-Dest .` means "install in place": never copy a file onto itself.
+    if ([IO.Path]::GetFullPath($source) -eq [IO.Path]::GetFullPath($target)) { continue }
+    Copy-Item -LiteralPath $source -Destination $target -Force
+}
 
 # --- 3. starter config.json (an existing one is never touched) -----------------
 $configPath = Join-Path $Dest 'config.json'

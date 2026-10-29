@@ -1,0 +1,115 @@
+# Build every release asset on a tag push and attach it to the GitHub Release.
+#
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# This is the professional way to get Linux/macOS binaries: they are built on native
+# runners, so no cross toolchain is needed on anybody's laptop. `workflow_dispatch` lets
+# you dry-run the packaging from the Actions tab without publishing anything.
+
+name: release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: Windows_x64
+            ext: zip
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            label: Linux_x64
+            ext: tar.gz
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            label: Linux_x64_static
+            ext: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            label: macOS_arm64
+            ext: tar.gz
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install musl-tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # Windows packages with PowerShell (System32 bsdtar writes real .zip files);
+      # everything else uses the bash script. Both read the version from Cargo.toml,
+      # so a tag and a manual workflow_dispatch run produce identically named assets.
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >
+          ./tools/dist.ps1
+          -Target "${{ matrix.target }}"
+          -Label "${{ matrix.label }}"
+          -Ext "${{ matrix.ext }}"
+          -SkipBuild
+
+      - name: Package (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: >
+          ./tools/dist.sh
+          --target "${{ matrix.target }}"
+          --label "${{ matrix.label }}"
+          --ext "${{ matrix.ext }}"
+          --skip-build
+
+      - name: Smoke test the packaged binary
+        shell: bash
+        run: |
+          bin="releases/${{ matrix.label }}/bin/scd"
+          case "${{ matrix.target }}" in *windows*) bin="$bin.exe" ;; esac
+          "$bin" --version
+          "$bin" --help | head -n 3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scd-${{ matrix.target }}
+          path: |
+            releases/*.zip
+            releases/*.tar.gz
+            releases/*.sha256
+
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          generate_release_notes: true
+          files: |
+            releases/*.zip
+            releases/*.tar.gz
+            releases/*.sha256

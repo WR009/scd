@@ -10,6 +10,27 @@
 
 set -euo pipefail
 
+# Colour, only when it will actually be seen - same rules as the program itself.
+# These must be defined BEFORE argument parsing, or the error paths below would call a
+# function that does not exist yet and `set -e` would abort with exit 127 and no message.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+    C_CYAN=$'\033[1;36m'; C_GREEN=$'\033[1;32m'; C_YELLOW=$'\033[33m'
+    C_RED=$'\033[1;31m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
+else
+    C_CYAN=''; C_GREEN=''; C_YELLOW=''; C_RED=''; C_DIM=''; C_OFF=''
+fi
+say()  { printf '%s==> %s%s\n' "$C_CYAN" "$1" "$C_OFF"; }
+good() { printf '%s%s%s\n' "$C_GREEN" "$1" "$C_OFF"; }
+note() { printf '%s%s%s\n' "$C_DIM" "$1" "$C_OFF"; }
+# Errors go to stderr, so they get their own tty check: CI logs stay escape-free.
+bad() {
+    if [ -t 2 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+        printf '%s%s%s\n' "$C_RED" "$1" "$C_OFF" >&2
+    else
+        printf '%s\n' "$1" >&2
+    fi
+}
+
 DEST="${HOME}/scd"
 CONFIGURATION="release"
 SKIP_BUILD=0
@@ -42,30 +63,33 @@ done
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Colour, only when it will actually be seen: same rules as the program itself.
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
-    C_CYAN=$'\033[1;36m'; C_GREEN=$'\033[1;32m'; C_YELLOW=$'\033[33m'
-    C_RED=$'\033[1;31m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
+# A release archive carries a prebuilt bin/scd and no Cargo.toml: nothing to build.
+if [ ! -f "$REPO/Cargo.toml" ] && [ -f "$REPO/bin/scd" ]; then
+    say "release archive detected: using $REPO/bin/scd (no Rust toolchain needed)"
+    BUILT="$REPO/bin/scd"
 else
-    C_CYAN=''; C_GREEN=''; C_YELLOW=''; C_RED=''; C_DIM=''; C_OFF=''
-fi
-say()  { printf '%s==> %s%s\n' "$C_CYAN" "$1" "$C_OFF"; }
-good() { printf '%s%s%s\n' "$C_GREEN" "$1" "$C_OFF"; }
-note() { printf '%s%s%s\n' "$C_DIM" "$1" "$C_OFF"; }
-bad()  { printf '%s%s%s\n' "$C_RED" "$1" "$C_OFF" >&2; }
-
-if [ "$SKIP_BUILD" -eq 0 ]; then
-    if ! command -v cargo >/dev/null 2>&1; then
-        bad 'cargo is not on PATH. Install Rust (https://rustup.rs) or use --skip-build.'
-        exit 1
+    if [ "$SKIP_BUILD" -eq 0 ]; then
+        if ! command -v cargo >/dev/null 2>&1; then
+            if [ -f "$REPO/bin/scd" ]; then
+                say 'cargo is not on PATH - falling back to the prebuilt binary'
+                BUILT="$REPO/bin/scd"
+            else
+                bad 'cargo is not on PATH. Install Rust (https://rustup.rs) or use --skip-build.'
+                exit 1
+            fi
+        else
+            say "cargo build --$CONFIGURATION (no dependencies, works offline)"
+            (cd "$REPO" && cargo build "--$CONFIGURATION")
+            BUILT="$REPO/target/$CONFIGURATION/scd"
+        fi
+    else
+        BUILT="$REPO/target/$CONFIGURATION/scd"
+        [ -f "$BUILT" ] || BUILT="$REPO/bin/scd"
     fi
-    say "cargo build --$CONFIGURATION (no dependencies, works offline)"
-    (cd "$REPO" && cargo build "--$CONFIGURATION")
 fi
 
-BUILT="$REPO/target/$CONFIGURATION/scd"
 if [ ! -f "$BUILT" ]; then
-    bad "no build found at $BUILT"
+    bad "no binary found (looked for $REPO/bin/scd and $REPO/target/$CONFIGURATION/scd)"
     exit 1
 fi
 
@@ -75,6 +99,12 @@ cp -f "$BUILT" "$DEST/bin/scd"
 chmod +x "$DEST/bin/scd"
 cp -f "$REPO"/shell/scd.bash "$REPO"/shell/scd.zsh "$REPO"/shell/scd.fish "$DEST/shell/"
 cp -f "$REPO"/shell/scd.ps1 "$REPO"/shell/scd.cmd "$DEST/shell/" 2>/dev/null || true
+for extra in install.sh install.ps1 install.cmd README.md CHANGELOG.md LICENSE config.example.json; do
+    if [ -f "$REPO/$extra" ] && [ "$(cd "$REPO" && pwd)/$extra" != "$(cd "$DEST" && pwd)/$extra" ]; then
+        cp -f "$REPO/$extra" "$DEST/$extra"
+    fi
+done
+chmod +x "$DEST/install.sh" 2>/dev/null || true
 
 if [ ! -f "$DEST/config.json" ]; then
     cat >"$DEST/config.json" <<'JSON'

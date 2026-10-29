@@ -31,6 +31,15 @@
     `#` 注释暗色，并逐字保留原有列对齐；
   * Windows 上自动开启控制台 VT 处理，cmd.exe / 老 conhost 不会显示裸转义码；
   * 中日韩名字按 2 列计宽、转义序列不计宽，混排仍然对齐。
+* **发布工程**：`tools/dist.ps1` / `tools/dist.sh` 一键打包，产物命名用 Rust target triple
+  （`scd-0.2.0-x86_64-pc-windows-msvc.zip`）并附 `.sha256`；包内就是文档规定的
+  `bin/ + shell/ + config.example.json` 结构，解压即用。
+* `install.cmd`：Windows 双击安装（自动 `-ExecutionPolicy Bypass`，并加 PATH 与 `$PROFILE`）。
+* `install.ps1` / `install.sh` 自动识别"源码仓库"与"解压出来的发布包"：后者不需要装 Rust。
+* `.github/workflows/release.yml`：推 `v*.*.*` 标签时在 windows / ubuntu(gnu+musl) / macos
+  原生 runner 上测试、编译、打包并自动挂到 GitHub Release。
+* 新增 `LICENSE`（MIT，此前 Cargo.toml 已声明但缺文件）、`config.example.json`，
+  `.gitignore` 忽略 `releases/`。
 * 配色开关：`SCD_COLOR=auto|always|never`，并遵守 `NO_COLOR`、`CLICOLOR=0`、
   `CLICOLOR_FORCE`、`TERM=dumb` 约定；默认 auto，输出被重定向时自动关闭。
 * `color::strip_ansi` 与「上色不改变文本」的回归测试；`target/preview.html` 预览页。

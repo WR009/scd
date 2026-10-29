@@ -11,6 +11,23 @@
 
 ---
 
+## 0. 从 GitHub Release 下载后怎么用（即开即用）
+
+1. 解压 `scd-<版本>-x86_64-pc-windows-msvc.zip` 到任意位置（里面已经是一个可用的安装目录）。
+2. **双击 `install.cmd`**
+   —— 它会用 `-ExecutionPolicy Bypass` 调 `install.ps1 -AddToPath -AddToProfile`，
+   把程序装到 `%USERPROFILE%\scd`、生成 `config.json`、把 `bin` 加进用户 PATH、把 shell 函数写进 `$PROFILE`。
+   想装到别处：`install.cmd -Dest D:\tools\scd`。不想让它碰环境变量：手动跑
+   `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Dest D:\tools\scd`（脚本会打印手工步骤）。
+3. **开一个新终端**，敲 `scd`。
+
+> 不想安装也能用：解压后直接跑 `bin\scd.exe`，配置会落到 `~\.scd\config.json`；
+> 但要让 `scd` 真的切换目录，仍然需要第 2 步（子进程改不了父 shell 的工作目录，见第 4 节）。
+
+Linux / macOS：解压 `*.tar.gz` 后执行 `./install.sh --dest ~/scd --add-to-rc`（发布包里已带编译好的 `bin/scd`，无需 Rust）。
+
+---
+
 ## 1. 安装后的结构
 
 `docs/ARCHITECTURE.md` 规定的结构，安装脚本会自动生成（位置由你自己决定）：
@@ -25,7 +42,11 @@
 │  ├─ scd.zsh        # zsh
 │  ├─ scd.fish       # fish
 │  └─ scd.cmd        # cmd.exe
-└─ config.json       # 你的配置：位置信息 + 显示多少个位置
+├─ config.json       # 你的配置：位置信息 + 显示多少个位置（首次运行时生成）
+├─ config.example.json  # 模板，发布包里附带的是这一份
+├─ install.cmd       # Windows 双击安装（Release 包里就有）
+├─ install.ps1 / install.sh
+└─ README.md / CHANGELOG.md / LICENSE
 ```
 
 ## 2. 安装
@@ -258,6 +279,33 @@ cargo run -- --help
 ```
 
 模块划分、设计取舍与需求对照见 [`docs/DESIGN.md`](docs/DESIGN.md)。
+
+### 打包与发布
+
+本机打包（产物落在 `releases/`，已被 `.gitignore` 忽略）：
+
+```powershell
+.\tools\dist.ps1                                   # Windows：releases\Windows_x64\ + zip + .sha256
+.\tools\dist.ps1 -SkipBuild                        # 复用已有构建
+```
+
+```bash
+./tools/dist.sh --target x86_64-unknown-linux-gnu   --label Linux_x64        # 在 Linux 上打包
+./tools/dist.sh --target x86_64-unknown-linux-musl  --label Linux_x64_static # 静态版，任何发行版都能跑
+./tools/dist.sh --target aarch64-apple-darwin       --label macOS_arm64
+```
+
+正式发版走 CI，不要在自己电脑上凑其它平台的产物：
+
+```bash
+# 1) 改 Cargo.toml 的 version + 写 CHANGELOG.md
+# 2) 提交并打标签
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+`.github/workflows/release.yml` 会在 windows / ubuntu / macos runner 上跑测试、编译、
+用同一个 `tools/dist.sh` 打包，并把 `zip` / `tar.gz` / `.sha256` 自动挂到 GitHub Release。
+上传件命名遵循 Rust target triple，例如 `scd-0.2.0-x86_64-pc-windows-msvc.zip`。
 
 ## 7. 排错
 
