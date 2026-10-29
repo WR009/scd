@@ -30,8 +30,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
-$isWindows = $Target -like '*windows*'
-$exeName = if ($isWindows) { 'scd.exe' } else { 'scd' }
+# Not $isWindows: on PowerShell 7 that is a read-only automatic variable ($IsWindows), so
+# assigning it aborts the script before it does anything. Windows PowerShell 5.1 has no such
+# variable, which is why this only ever blew up under CI's shell: pwsh.
+$forWindows = $Target -like '*windows*'
+$exeName = if ($forWindows) { 'scd.exe' } else { 'scd' }
 
 function Step([string] $Message) { Write-Host "==> $Message" -ForegroundColor Cyan }
 
@@ -40,7 +43,7 @@ if (-not $Version) {
     if ($toml -notmatch '(?m)^version\s*=\s*"([^"]+)"') { throw 'cannot read version from Cargo.toml' }
     $Version = $Matches[1]
 }
-if (-not $isWindows) {
+if (-not $forWindows) {
     Write-Warning "Packaging a unix target from Windows cannot set the executable bit - use tools/dist.sh (or CI) for $Target."
 }
 

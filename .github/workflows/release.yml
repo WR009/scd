@@ -91,8 +91,10 @@ jobs:
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        # -ExecutionPolicy Bypass: the runner's policy is not ours to assume, and a blocked
+        # script would be indistinguishable from a packaging bug.
         run: >
-          ./tools/dist.ps1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/dist.ps1
           -Target "${{ matrix.target }}"
           -Label "${{ matrix.label }}"
           -Ext "${{ matrix.ext }}"
