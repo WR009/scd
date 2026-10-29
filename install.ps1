@@ -158,7 +158,7 @@ Copy-Item -LiteralPath $built -Destination (Join-Path $binDir $exeName) -Force
 Copy-Item -Path (Join-Path $repo 'shell\*') -Destination $shellDir -Force
 
 # Docs and the installer itself, so <Dest> is self-contained (and re-installable).
-foreach ($extra in 'install.ps1', 'install.cmd', 'install.sh', 'README.md', 'CHANGELOG.md', 'LICENSE', 'config.example.json') {
+foreach ($extra in 'install.ps1', 'install.cmd', 'install.sh', 'README.md', 'README.en.md', 'CHANGELOG.md', 'LICENSE', 'config.example.json') {
     $source = Join-Path $repo $extra
     $target = Join-Path $Dest $extra
     if (-not (Test-Path -LiteralPath $source)) { continue }
