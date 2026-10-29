@@ -62,6 +62,13 @@
 
 * 160 项（110 单元 + 50 端到端），新增配色契约、帮助排版不变式、NO_COLOR 优先级，
   以及顺序固定、`mv`/`up`/`down`/`rename`、手改顺序、隐藏提示等用例。
+* 端到端沙箱的根目录改为规范化路径（`paths::absolute`）：CI runner 的临时目录在 Windows 上是
+  8.3 短名（`C:\Users\RUNNER~1\...`）、在 macOS 上要经过 `/var -> /private/var` 符号链接，
+  拼写与 scd 报告的规范化路径不同，导致 `add` 的两个断言只在 CI 上失败、本地全绿。
+* 给子进程写 stdin 时容忍 `BrokenPipe`：被测程序本来就可能读完输入之前就退出（配置损坏、
+  `quit` 等），静态 musl 构建跑得快时会赢下这个竞争，测试因此偶发失败。
+* `.github/workflows/release.yml`：`cargo test` 失败时把关键行发成 check-run annotation ——
+  job 日志只有仓库管理员能下载，annotation 走公开 API 就能读到。
 
 ## 0.1.0
 

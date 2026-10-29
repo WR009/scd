@@ -193,7 +193,11 @@ mod tests {
             .as_nanos();
         let dir = std::env::temp_dir().join(format!("scd-add-{tag}-{}-{nanos}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        dir
+        // CI runners hand out temp dirs that are not in canonical form (8.3 short names
+        // on the Windows runners, /var -> /private/var on macOS). scd reports canonical
+        // paths, so the sandbox root has to be canonical too or the two spellings of the
+        // same directory never compare equal.
+        crate::paths::absolute(&dir)
     }
 
     fn out() -> Ui {
@@ -232,7 +236,7 @@ mod tests {
             Outcome::Done(lines) => {
                 assert_eq!(lines.len(), 1);
                 assert!(lines[0].starts_with("added [1] project"), "{lines:?}");
-                assert!(lines[0].contains(&target.display().to_string()), "{lines:?}");
+                assert!(lines[0].contains(&paths::absolute(&target).display().to_string()), "{lines:?}");
             }
             other => panic!("expected Done, got {other:?}"),
         }
@@ -257,7 +261,7 @@ mod tests {
                 assert!(lines[0].starts_with("\x1b[1;32madded\x1b[0m "), "{:?}", lines[0]);
                 assert!(lines[0].contains("\x1b[1;32mproject\x1b[0m"), "{:?}", lines[0]);
                 assert!(
-                    lines[0].contains(&format!("\x1b[1;36m{}\x1b[0m", target.display())),
+                    lines[0].contains(&format!("\x1b[1;36m{}\x1b[0m", paths::absolute(&target).display())),
                     "{:?}",
                     lines[0]
                 );

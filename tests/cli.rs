@@ -94,8 +94,16 @@ impl Sandbox {
         let mut child = command.spawn().expect("spawn scd");
         {
             let mut stdin = child.stdin.take().expect("stdin");
-            stdin.write_all(input.as_bytes()).expect("write stdin");
-            stdin.flush().expect("flush stdin");
+            // The child may exit before reading everything (a corrupt config, an unknown
+            // command, `quit`), which closes the pipe. That is the behaviour under test,
+            // not a harness failure, so a broken pipe is ignored - on a fast static-musl
+            // runner the child can win the race, and it did.
+            match stdin.write_all(input.as_bytes()) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => {}
+                Err(err) => panic!("write stdin: {err}"),
+            }
+            let _ = stdin.flush();
         }
         child.wait_with_output().expect("wait for scd")
     }

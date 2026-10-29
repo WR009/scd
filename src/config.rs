@@ -518,7 +518,11 @@ mod tests {
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let dir = std::env::temp_dir().join(format!("scd-cfg-{}-{tag}-{nanos}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        dir
+        // CI runners hand out temp dirs that are not in canonical form (8.3 short names
+        // on the Windows runners, /var -> /private/var on macOS). scd reports canonical
+        // paths, so the sandbox root has to be canonical too or the two spellings of the
+        // same directory never compare equal.
+        crate::paths::absolute(&dir)
     }
 
     fn cleanup(dir: &Path) {
