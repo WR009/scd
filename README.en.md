@@ -63,7 +63,7 @@ Compare the result with the contents of the `.sha256` file.
 
 1. **Download** the `.zip`
 2. **Extract** it anywhere (right-click → Extract All)
-3. **Double-click `install.cmd`** in the extracted folder
+3. **Double-click `install.cmd`** in the extracted folder, as administrator requiredly.
 
 It first asks where to install:
 
