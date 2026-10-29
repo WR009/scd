@@ -58,7 +58,7 @@ certutil -hashfile scd-0.2.1-x86_64-pc-windows-msvc.zip SHA256
 
 1. **下载**上面的 `.zip`
 2. **解压**到任意位置（右键 → 全部解压）
-3. **双击解压目录里的 `install.cmd`**
+3. **双击解压目录里的 `install.cmd`**,需要管理员权限。
 
 它会先问你装到哪儿：
 
