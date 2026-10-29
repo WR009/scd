@@ -61,7 +61,26 @@ jobs:
           sudo apt-get install -y musl-tools
 
       - name: Test
-        run: cargo test --locked
+        id: test
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cargo test --locked 2>&1 | tee test.log
+
+      # Job logs can only be downloaded by repository admins, so the interesting lines are
+      # republished as check-run annotations: those show up in the Actions UI and are
+      # readable through the public API.
+      - name: Publish test failures
+        if: steps.test.outcome == 'failure'
+        shell: bash
+        run: |
+          grep -E 'panicked at|^---- |^failures:$|^ +[A-Za-z0-9_:]+$|test result: FAILED|^error' test.log |
+            head -n 60 |
+            while IFS= read -r line; do
+              printf '::error::%s\n' "$(printf '%s' "$line" | tr -d '\r')"
+            done
+          exit 1
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
